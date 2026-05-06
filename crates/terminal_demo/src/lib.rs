@@ -1,6 +1,9 @@
 use gpui::{App, AppContext as _, Application, Bounds, Entity, WindowBounds, WindowOptions, px, size};
 use gpui_component::{Root, Theme, ThemeMode};
 
+const FONT_SIZE_MIN: f32 = 10.0;
+const FONT_SIZE_MAX: f32 = 28.0;
+
 pub mod economic_calendar;
 pub mod panels;
 pub mod persistence;
@@ -24,6 +27,11 @@ fn init(cx: &mut App) {
 
     // Hardcoded dark theme.
     Theme::change(ThemeMode::Dark, None, cx);
+
+    // Apply persisted font size before any window opens so the first frame is right-sized.
+    if let Some(size) = persistence::load_font_size() {
+        cx.global_mut::<Theme>().font_size = px(size.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX));
+    }
 
     #[cfg(target_family = "wasm")]
     install_wasm_fonts(cx);

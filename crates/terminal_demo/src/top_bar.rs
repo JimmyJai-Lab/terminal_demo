@@ -27,13 +27,19 @@ fn adjust_font_size(delta: f32, window: &mut Window, cx: &mut gpui::App) {
     if (next - current).abs() < 0.01 {
         return;
     }
-    cx.global_mut::<Theme>().font_size = px(next);
-    window.refresh();
+    apply_font_size(next, window, cx);
 }
 
 fn set_font_size(value: f32, window: &mut Window, cx: &mut gpui::App) {
-    cx.global_mut::<Theme>().font_size = px(value.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX));
+    apply_font_size(value.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX), window, cx);
+}
+
+fn apply_font_size(value: f32, window: &mut Window, cx: &mut gpui::App) {
+    cx.global_mut::<Theme>().font_size = px(value);
     window.refresh();
+    if let Err(err) = crate::persistence::save_font_size(value) {
+        log::warn!("save font size failed: {err:?}");
+    }
 }
 
 use crate::panels::PANEL_KINDS;
