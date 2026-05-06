@@ -9,13 +9,16 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     chart::{CandlestickChart, LineChart},
     description_list::DescriptionList,
+    dialog::DialogButtonProps,
     dock::{Panel, PanelEvent, PanelView, TabPanel, register_panel},
     h_flex,
     input::{Input, InputState},
+    link::Link,
+    notification::Notification,
     v_flex,
 };
 
@@ -29,6 +32,7 @@ pub enum Kind {
     Notification,
     SmartMoney,
     AiChat,
+    EconomicCalendar,
 }
 
 impl Kind {
@@ -41,6 +45,7 @@ impl Kind {
         Kind::Notification,
         Kind::SmartMoney,
         Kind::AiChat,
+        Kind::EconomicCalendar,
     ];
 
     pub fn id(self) -> &'static str {
@@ -53,6 +58,7 @@ impl Kind {
             Kind::Notification => "Notification",
             Kind::SmartMoney => "SmartMoney",
             Kind::AiChat => "AiChat",
+            Kind::EconomicCalendar => "EconomicCalendar",
         }
     }
 
@@ -61,6 +67,7 @@ impl Kind {
             Kind::NewsFeed => "News Feed",
             Kind::SmartMoney => "Smart Money",
             Kind::AiChat => "AI Chat",
+            Kind::EconomicCalendar => "Economic Calendar",
             other => other.id(),
         }
     }
@@ -84,13 +91,23 @@ pub fn init(cx: &mut App) {
     for kind in Kind::ALL {
         let kind = *kind;
         register_panel(cx, kind.id(), move |_dock_area, _state, _info, window, cx| {
-            Box::new(cx.new(|cx| ContentPanel::new(kind, window, cx)))
+            match kind {
+                Kind::EconomicCalendar => Box::new(
+                    cx.new(|cx| crate::economic_calendar::EconomicCalendarPanel::new(window, cx)),
+                ),
+                _ => Box::new(cx.new(|cx| ContentPanel::new(kind, window, cx))),
+            }
         });
     }
 }
 
 pub fn build_kind(kind: Kind, window: &mut Window, cx: &mut App) -> Arc<dyn PanelView> {
-    Arc::new(cx.new(|cx| ContentPanel::new(kind, window, cx)))
+    match kind {
+        Kind::EconomicCalendar => Arc::new(
+            cx.new(|cx| crate::economic_calendar::EconomicCalendarPanel::new(window, cx)),
+        ),
+        _ => Arc::new(cx.new(|cx| ContentPanel::new(kind, window, cx))),
+    }
 }
 
 pub struct ContentPanel {
@@ -186,6 +203,9 @@ impl Render for ContentPanel {
                 cx,
             )
             .into_any_element(),
+            Kind::EconomicCalendar => unreachable!(
+                "EconomicCalendar is handled by EconomicCalendarPanel, not ContentPanel"
+            ),
         };
         // AiChat manages its own internal scroll region (so its input bar stays pinned at
         // the bottom). Every other kind gets a single outer scroll wrapper so long lists
@@ -430,34 +450,44 @@ struct NewsItem {
     tag: &'static str,
     headline: &'static str,
     source: &'static str,
+    body: &'static str,
+    link: &'static str,
 }
 
 const NEWS: &[NewsItem] = &[
-    NewsItem { time: "10:32", tag: "AAPL",  headline: "Apple reports Q2 earnings beat, services revenue up 14%", source: "Reuters" },
-    NewsItem { time: "10:15", tag: "FED",   headline: "Powell signals patient approach on rate cuts",            source: "Bloomberg" },
-    NewsItem { time: "09:58", tag: "NVDA",  headline: "NVIDIA hits new all-time high on AI chip demand",         source: "CNBC" },
-    NewsItem { time: "09:42", tag: "META",  headline: "Meta unveils next-gen Ray-Ban smart glasses",             source: "The Verge" },
-    NewsItem { time: "09:30", tag: "MKT",   headline: "S&P 500 opens flat as traders await CPI data",            source: "WSJ" },
-    NewsItem { time: "09:14", tag: "TSLA",  headline: "Tesla deliveries miss estimates; stock down 2% premkt",   source: "Reuters" },
-    NewsItem { time: "08:55", tag: "BTC",   headline: "Bitcoin steady at $68k as ETF inflows resume",            source: "CoinDesk" },
-    NewsItem { time: "08:30", tag: "ECON",  headline: "Initial jobless claims fall to 218k, below estimates",    source: "BLS" },
-    NewsItem { time: "08:12", tag: "OIL",   headline: "Brent crude rises 1.2% on Middle East supply concerns",   source: "Bloomberg" },
-    NewsItem { time: "07:45", tag: "GOOGL", headline: "Alphabet announces $70B share buyback plan",              source: "FT" },
+    NewsItem { time: "10:32", tag: "AAPL",  headline: "Apple reports Q2 earnings beat, services revenue up 14%", source: "Reuters",   link: "https://reuters.com/aapl-q2",      body: "Apple Inc. reported fiscal Q2 revenue of $94.8B, beating consensus estimates of $93.2B. Services revenue jumped 14% YoY to $24.2B, a new all-time high. iPhone revenue was flat YoY at $51.3B amid softer demand in Greater China. The company guided to low single-digit revenue growth for Q3 and authorized an additional $110B in share buybacks." },
+    NewsItem { time: "10:15", tag: "FED",   headline: "Powell signals patient approach on rate cuts",            source: "Bloomberg", link: "https://bloomberg.com/fed-powell", body: "Fed Chair Jerome Powell, speaking at a Stanford conference, indicated that policymakers are in no rush to cut rates and want more evidence that inflation is sustainably moving toward the 2% target. Markets pared back expectations for the first cut to September, with the probability of a June cut now at 18%." },
+    NewsItem { time: "09:58", tag: "NVDA",  headline: "NVIDIA hits new all-time high on AI chip demand",         source: "CNBC",      link: "https://cnbc.com/nvda-ath",       body: "NVIDIA shares hit a new intraday high of $878.50 after Morgan Stanley raised its price target to $1,100, citing accelerating Blackwell GPU pre-orders from hyperscalers. Microsoft, Meta, and Google are reportedly tripling their AI infrastructure capex through 2025." },
+    NewsItem { time: "09:42", tag: "META",  headline: "Meta unveils next-gen Ray-Ban smart glasses",             source: "The Verge", link: "https://theverge.com/meta-rayban",  body: "Meta announced the next generation of its Ray-Ban Stories smart glasses, featuring an integrated display, 12-hour battery life, and on-device Llama 4 inference. The product will start shipping in Q4 at $499 and is positioned as a direct competitor to Apple Vision Pro for ambient computing." },
+    NewsItem { time: "09:30", tag: "MKT",   headline: "S&P 500 opens flat as traders await CPI data",            source: "WSJ",       link: "https://wsj.com/sp500-flat",       body: "U.S. stocks opened little changed on Tuesday as traders awaited Wednesday's CPI report, which is expected to show core inflation rising 0.3% MoM. Treasury yields edged up, with the 10-year hovering near 4.40%. Dollar index was steady at 105.2." },
+    NewsItem { time: "09:14", tag: "TSLA",  headline: "Tesla deliveries miss estimates; stock down 2% premkt",   source: "Reuters",   link: "https://reuters.com/tsla-deliveries", body: "Tesla reported Q1 deliveries of 386,810 vehicles, well below the consensus estimate of 449,080. The company cited the Berlin gigafactory arson, Red Sea shipping disruptions, and the Model 3 refresh ramp as headwinds. Year-over-year deliveries fell 8.5%, the first annual decline since 2020." },
+    NewsItem { time: "08:55", tag: "BTC",   headline: "Bitcoin steady at $68k as ETF inflows resume",            source: "CoinDesk",  link: "https://coindesk.com/btc-etf",     body: "Bitcoin held steady at $68,200 as spot BTC ETFs recorded $312M of net inflows on Monday, ending a five-day outflow streak. BlackRock's IBIT led with $145M of inflows, followed by Fidelity's FBTC. Total ETF AUM has now surpassed $58B since launch in January." },
+    NewsItem { time: "08:30", tag: "ECON",  headline: "Initial jobless claims fall to 218k, below estimates",    source: "BLS",       link: "https://bls.gov/jobless-claims",   body: "Initial jobless claims fell to 218,000 in the week ended April 27, below consensus of 232,000 and the lowest reading since February. The 4-week moving average ticked down to 213,250. Continuing claims rose modestly to 1.78M, suggesting a labor market that remains tight but is gradually cooling." },
+    NewsItem { time: "08:12", tag: "OIL",   headline: "Brent crude rises 1.2% on Middle East supply concerns",   source: "Bloomberg", link: "https://bloomberg.com/oil-mideast", body: "Brent crude rose 1.2% to $89.45/bbl after reports of Israeli airstrikes near a key Iranian oil terminal. Goldman Sachs raised its summer Brent forecast to $95/bbl, citing tighter OPEC+ compliance and stronger-than-expected gasoline demand heading into driving season." },
+    NewsItem { time: "07:45", tag: "GOOGL", headline: "Alphabet announces $70B share buyback plan",              source: "FT",        link: "https://ft.com/googl-buyback",     body: "Alphabet's board authorized a $70B share repurchase program and declared its first-ever quarterly dividend of $0.20/share. The buyback represents about 4% of the company's market cap and follows similar dividend initiations from Meta earlier this year. Shares jumped 14% in after-hours trading on the announcement." },
 ];
 
 fn render_news(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl IntoElement {
     let theme = cx.theme();
+    let hover_bg = theme.accent;
     v_flex()
         .w_full()
         .p_2()
         .gap_1()
-        .children(NEWS.iter().map(|n| {
+        .children(NEWS.iter().enumerate().map(|(idx, n)| {
             v_flex()
+                .id(SharedString::from(format!("news-row-{idx}")))
                 .px_2()
                 .py_2()
                 .gap_1()
+                .rounded(gpui::px(4.))
                 .border_b_1()
                 .border_color(theme.border)
+                .cursor_pointer()
+                .hover(|s| s.bg(hover_bg))
+                .on_click(cx.listener(move |_this, _ev, window, cx| {
+                    open_news_dialog(n, window, cx);
+                }))
                 .child(
                     h_flex()
                         .gap_2()
@@ -480,6 +510,80 @@ fn render_news(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl Int
                 )
                 .child(div().text_sm().text_color(theme.foreground).child(n.headline))
         }))
+}
+
+fn open_news_dialog(n: &'static NewsItem, window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let accent = theme.accent;
+        let accent_fg = theme.accent_foreground;
+        let border = theme.border;
+        dialog
+            .title(SharedString::from(n.headline))
+            .max_w(gpui::px(560.))
+            .button_props(
+                DialogButtonProps::default()
+                    .show_cancel(true)
+                    .ok_text("Open Source")
+                    .on_ok(move |_, window, cx| {
+                        window.push_notification(
+                            Notification::info(SharedString::from(format!(
+                                "Opening source: {}",
+                                n.link
+                            )))
+                            .title("News source"),
+                            cx,
+                        );
+                        true
+                    }),
+            )
+            .child(
+                v_flex()
+                    .px_4()
+                    .pb_4()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(div().child(n.time))
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(gpui::px(3.))
+                                    .bg(accent)
+                                    .text_color(accent_fg)
+                                    .child(n.tag),
+                            )
+                            .child(div().child("·"))
+                            .child(div().child(n.source)),
+                    )
+                    .child(
+                        div()
+                            .pt_2()
+                            .border_t_1()
+                            .border_color(border)
+                            .text_sm()
+                            .child(n.body),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("Source:")
+                            .child(
+                                Link::new("news-link")
+                                    .href(n.link)
+                                    .child(n.link),
+                            ),
+                    ),
+            )
+    });
 }
 
 // ============================================================================

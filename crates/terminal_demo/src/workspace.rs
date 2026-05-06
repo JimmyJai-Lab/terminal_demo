@@ -45,7 +45,7 @@ impl TerminalWorkspace {
         )
         .detach();
 
-        let top_bar = cx.new(|_| TopBar::new("terminal_demo"));
+        let top_bar = cx.new(|cx| TopBar::new("terminal_demo", window, cx));
 
         Self {
             top_bar,

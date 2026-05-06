@@ -6157,6 +6157,7 @@ name = "terminal_demo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "console_error_panic_hook",
  "console_log",
  "dirs 5.0.1",

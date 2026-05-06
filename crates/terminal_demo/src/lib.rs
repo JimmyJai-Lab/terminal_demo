@@ -1,6 +1,7 @@
 use gpui::{App, AppContext as _, Application, Bounds, Entity, WindowBounds, WindowOptions, px, size};
 use gpui_component::{Root, Theme, ThemeMode};
 
+pub mod economic_calendar;
 pub mod panels;
 pub mod persistence;
 pub mod top_bar;
