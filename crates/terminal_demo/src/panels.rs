@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _,
 };
 use gpui_component::{
@@ -98,17 +98,11 @@ pub struct ContentPanel {
     focus_handle: FocusHandle,
     parent_tab_panel: Option<WeakEntity<TabPanel>>,
     chat_input: Option<Entity<InputState>>,
-    _focus_subscription: Subscription,
 }
 
 impl ContentPanel {
     pub fn new(kind: Kind, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        // Fires on every click that lands focus into this panel — including clicks on the
-        // body of an already-active tab (which `set_active` misses).
-        let _focus_subscription = cx.on_focus_in(&focus_handle, window, |this, _window, cx| {
-            this.mark_focused(cx);
-        });
         // Only the AI chat panel has a real input; other kinds don't pay the InputState cost.
         let chat_input = matches!(kind, Kind::AiChat).then(|| {
             cx.new(|cx| InputState::new(window, cx).placeholder("Ask anything…"))
@@ -118,7 +112,6 @@ impl ContentPanel {
             focus_handle,
             parent_tab_panel: None,
             chat_input,
-            _focus_subscription,
         }
     }
 
@@ -128,6 +121,17 @@ impl ContentPanel {
         };
         let global = cx.global::<LastFocusedTabPanel>().0.clone();
         *global.borrow_mut() = Some(tab_panel);
+    }
+
+    fn is_focused(&self, cx: &App) -> bool {
+        let Some(mine) = self.parent_tab_panel.as_ref() else {
+            return false;
+        };
+        let global = cx.global::<LastFocusedTabPanel>().0.borrow();
+        global
+            .as_ref()
+            .map(|w| w.entity_id() == mine.entity_id())
+            .unwrap_or(false)
     }
 }
 
@@ -198,16 +202,21 @@ impl Render for ContentPanel {
         };
         // Border is always 2px wide so toggling focus doesn't shift content; only the color
         // changes between transparent (unfocused) and theme.ring (focused).
-        let focused = self.focus_handle.is_focused(window);
-        let border_color = if focused {
+        let border_color = if self.is_focused(cx) {
             cx.theme().ring
         } else {
             gpui::transparent_black()
         };
-        // track_focus makes the panel area itself focusable, so clicks inside the body land
-        // focus on `focus_handle` and trigger our on_focus_in subscription.
+        // Click-based focus tracking (NOT track_focus / on_focus_in) — gpui's web focus
+        // mechanism uses a hidden input element which makes mobile browsers pop the soft
+        // keyboard on every tap. Mouse-down works the same on touch and doesn't claim
+        // text-input focus.
         div()
-            .track_focus(&self.focus_handle)
+            .id(SharedString::from(format!("panel-body-{}", self.kind.id())))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _window, cx| this.mark_focused(cx)),
+            )
             .size_full()
             .border_2()
             .border_color(border_color)
