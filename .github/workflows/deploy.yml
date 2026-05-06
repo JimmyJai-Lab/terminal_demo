@@ -1,0 +1,63 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deploy at a time; queue but don't cancel an in-flight one so a
+# successful build doesn't get clobbered mid-deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      # Cache cargo registry, git deps, and target/ so subsequent builds drop from
+      # ~10–15 min to ~2–3 min. Cache key includes Cargo.lock so dep bumps invalidate cleanly.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install --locked wasm-bindgen-cli@0.2.120
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build WASM (release)
+        run: ./scripts/build-wasm.sh --release
+
+      - name: Build frontend
+        env:
+          # Vite needs to know the GitHub Pages subpath so asset URLs resolve.
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+        run: |
+          cd www
+          bun install
+          bun run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: www/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
