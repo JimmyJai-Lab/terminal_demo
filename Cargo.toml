@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/terminal_demo"]
+# Exclude the vendored gpui-component fork — it has its own [workspace] and
+# cargo would otherwise pull its members into ours.
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -44,3 +47,10 @@ xml5ever = { opt-level = 3 }
 [patch.crates-io]
 psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }
 tree-sitter-navi = { git = "https://github.com/navi-language/tree-sitter-navi" }
+
+# Vendored gpui-component fork (forked at d3d6e56) — adds whole-window-edge
+# docking. See vendor/gpui-component/. Keep aligned by re-cloning at the
+# upstream rev in workspace.dependencies and re-applying our patches.
+[patch."https://github.com/longbridge/gpui-component"]
+gpui-component = { path = "vendor/gpui-component/crates/ui" }
+gpui-component-assets = { path = "vendor/gpui-component/crates/assets" }

@@ -1,17 +1,17 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
+use crate::persistence::SavedLayouts;
 use gpui::{
     Action, Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Task,
     Window, actions, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _, Theme, WindowExt as _,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, Theme, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::{DialogButtonProps, DialogFooter, DialogHeader, DialogTitle},
     h_flex,
     menu::DropdownMenu as _,
-    notification::Notification,
     separator::Separator,
     v_flex,
 };
@@ -44,15 +44,51 @@ fn apply_font_size(value: f32, window: &mut Window, cx: &mut gpui::App) {
 
 use crate::panels::PANEL_KINDS;
 
-actions!(terminal_demo, [ResetLayout]);
+actions!(
+    terminal_demo,
+    [
+        ResetLayout,
+        ToggleAiChat,
+        ToggleTrading,
+        SaveLayout,
+        SaveLayoutCurrent,
+        ManageLayouts
+    ]
+);
 
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = terminal_demo, no_json)]
 pub struct AddPanel(pub SharedString);
 
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = terminal_demo, no_json)]
+pub struct AskAi(pub SharedString);
+
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = terminal_demo, no_json)]
+pub struct ApplyLayout(pub SharedString);
+
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = terminal_demo, no_json)]
+pub struct DeleteLayout(pub SharedString);
+
+
 pub struct TopBar {
     title: SharedString,
     now: DateTime<Local>,
+    /// Display name + writability for the currently active layout, shown on
+    /// the layout button. The host (TerminalWorkspace) pushes updates via
+    /// `set_current_layout` whenever a preset/saved layout is applied.
+    current_layout_label: SharedString,
+    /// True when the active layout can be overwritten in place (i.e. it's a
+    /// user-saved layout, not a preset). Drives the Save button: when true,
+    /// Save overwrites; otherwise it falls through to Save-As.
+    current_layout_overwritable: bool,
+    /// Cached saved-layouts list used to render the Layout dropdown's "Saved"
+    /// section. Populated on construction and refreshed by the workspace
+    /// whenever layouts change — avoids hitting localStorage / disk on every
+    /// TopBar render.
+    saved_layouts: SavedLayouts,
     _tick_task: Task<()>,
 }
 
@@ -85,8 +121,32 @@ impl TopBar {
         Self {
             title: title.into(),
             now: Local::now(),
+            current_layout_label: SharedString::from("Layout"),
+            current_layout_overwritable: false,
+            saved_layouts: crate::persistence::load_layouts(),
             _tick_task,
         }
+    }
+
+    /// Update the layout button's label and Save semantics. Called by the
+    /// workspace whenever the active layout changes (on apply / save-as / etc).
+    pub fn set_current_layout(
+        &mut self,
+        label: impl Into<SharedString>,
+        overwritable: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.current_layout_label = label.into();
+        self.current_layout_overwritable = overwritable;
+        cx.notify();
+    }
+
+    /// Re-read saved layouts from persistence. Workspace calls this after
+    /// every save/delete so the dropdown stays in sync without paying a disk
+    /// read per render.
+    pub fn refresh_saved_layouts(&mut self, cx: &mut Context<Self>) {
+        self.saved_layouts = crate::persistence::load_layouts();
+        cx.notify();
     }
 }
 
@@ -100,7 +160,10 @@ impl Render for TopBar {
             .ghost()
             .dropdown_menu(|menu, _, _| {
                 let mut menu = menu;
-                for kind in PANEL_KINDS {
+                // Singleton kinds (AI Chat, Position, Execution) are reserved for
+                // toolbar toggles only — hide them here so the user can't dock
+                // duplicates from this menu.
+                for kind in PANEL_KINDS.iter().filter(|k| !k.is_singleton()) {
                     menu = menu.menu(
                         kind.display(),
                         Box::new(AddPanel(SharedString::from(kind.id()))),
@@ -109,16 +172,77 @@ impl Render for TopBar {
                 menu
             });
 
-        let notify_btn = Button::new("notify")
-            .label("Notify")
+        let saved_names: Vec<SharedString> = self
+            .saved_layouts
+            .keys()
+            .map(|name| SharedString::from(name.clone()))
+            .collect();
+        let layout_menu = Button::new("layout")
+            .label(self.current_layout_label.clone())
             .small()
             .ghost()
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.label("Predefined");
+                for preset in PRESET_LAYOUTS {
+                    menu = menu.menu(
+                        *preset.1,
+                        Box::new(ApplyLayout(SharedString::from(preset.0))),
+                    );
+                }
+                menu = menu
+                    .separator()
+                    .menu("Save current layout…", Box::new(SaveLayout))
+                    .menu("Manage layouts…", Box::new(ManageLayouts));
+
+                if !saved_names.is_empty() {
+                    menu = menu.separator().label("Saved");
+                    for name in &saved_names {
+                        menu = menu.menu(
+                            name.clone(),
+                            Box::new(ApplyLayout(name.clone())),
+                        );
+                    }
+                }
+                menu
+            });
+
+        let save_layout_btn = {
+            let overwritable = self.current_layout_overwritable;
+            let (label, tooltip) = if overwritable {
+                ("Save", "Save changes to current layout")
+            } else {
+                ("Save As", "Save current layout under a new name (presets are read-only)")
+            };
+            Button::new("save-layout")
+                .label(label)
+                .small()
+                .ghost()
+                .tooltip(tooltip)
+                .on_click(move |_, window, cx| {
+                    if overwritable {
+                        window.dispatch_action(Box::new(SaveLayoutCurrent), cx);
+                    } else {
+                        window.dispatch_action(Box::new(SaveLayout), cx);
+                    }
+                })
+        };
+
+        let trading_btn = Button::new("trading")
+            .icon(IconName::SquareTerminal)
+            .small()
+            .ghost()
+            .tooltip("Toggle trading panels")
             .on_click(|_, window, cx| {
-                window.push_notification(
-                    Notification::success("Order filled · BUY 100 NVDA @ $873.50")
-                        .title("Trade executed"),
-                    cx,
-                );
+                window.dispatch_action(Box::new(ToggleTrading), cx);
+            });
+
+        let ai_chat_btn = Button::new("ai-chat")
+            .icon(IconName::Bot)
+            .small()
+            .ghost()
+            .tooltip("Toggle AI chat panel")
+            .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(ToggleAiChat), cx);
             });
 
         let settings_btn = Button::new("settings")
@@ -161,8 +285,11 @@ impl Render for TopBar {
             .child(div().flex_1())
             .child(clock)
             .child(div().w(px(8.)))
-            .child(notify_btn)
             .child(add_menu)
+            .child(layout_menu)
+            .child(save_layout_btn)
+            .child(trading_btn)
+            .child(ai_chat_btn)
             .child(settings_btn)
     }
 }
@@ -257,6 +384,19 @@ fn render_font_size_setting() -> impl IntoElement {
                 ),
         )
 }
+
+// Preset layout names. The id strings are passed through `ApplyLayout`; the
+// workspace dispatches to a builder when the id starts with `__preset_`,
+// otherwise it loads from saved-layouts persistence.
+pub const PRESET_GENERAL: &str = "__preset_general";
+pub const PRESET_FUNDAMENTAL: &str = "__preset_fundamental";
+pub const PRESET_TECHNICAL: &str = "__preset_technical";
+
+const PRESET_LAYOUTS: &[(&str, &&str)] = &[
+    (PRESET_GENERAL, &"General"),
+    (PRESET_FUNDAMENTAL, &"Fundamental"),
+    (PRESET_TECHNICAL, &"Technical"),
+];
 
 #[derive(gpui::IntoElement)]
 struct FontSizeReadout;

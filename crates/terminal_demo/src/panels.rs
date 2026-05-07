@@ -22,7 +22,7 @@ use gpui_component::{
     v_flex,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Watchlist,
     Chart,
@@ -33,6 +33,8 @@ pub enum Kind {
     SmartMoney,
     AiChat,
     EconomicCalendar,
+    Position,
+    Execution,
 }
 
 impl Kind {
@@ -46,6 +48,8 @@ impl Kind {
         Kind::SmartMoney,
         Kind::AiChat,
         Kind::EconomicCalendar,
+        Kind::Position,
+        Kind::Execution,
     ];
 
     pub fn id(self) -> &'static str {
@@ -59,6 +63,8 @@ impl Kind {
             Kind::SmartMoney => "SmartMoney",
             Kind::AiChat => "AiChat",
             Kind::EconomicCalendar => "EconomicCalendar",
+            Kind::Position => "Position",
+            Kind::Execution => "Execution",
         }
     }
 
@@ -74,6 +80,12 @@ impl Kind {
 
     pub fn from_id(id: &str) -> Option<Kind> {
         Self::ALL.iter().copied().find(|k| k.id() == id)
+    }
+
+    /// Singleton kinds may only have one instance live at a time. The toolbar
+    /// toggles and the +Panel menu both consult this to avoid duplicates.
+    pub fn is_singleton(self) -> bool {
+        matches!(self, Kind::AiChat | Kind::Position | Kind::Execution)
     }
 }
 
@@ -115,24 +127,80 @@ pub struct ContentPanel {
     focus_handle: FocusHandle,
     parent_tab_panel: Option<WeakEntity<TabPanel>>,
     chat_input: Option<Entity<InputState>>,
+    /// Execution-panel inputs. Set only when `kind == Kind::Execution`.
+    exec_inputs: Option<ExecutionInputs>,
+}
+
+#[derive(Clone)]
+pub struct ExecutionInputs {
+    pub symbol: Entity<InputState>,
+    pub quantity: Entity<InputState>,
+    pub limit: Entity<InputState>,
 }
 
 impl ContentPanel {
     pub fn new(kind: Kind, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         // Only the AI chat panel has a real input; other kinds don't pay the InputState cost.
+        // `auto_grow` wraps long prompts and grows the input up to 8 rows before
+        // it starts internal scrolling (useful for "Ask AI" prefilled prompts).
         let chat_input = matches!(kind, Kind::AiChat).then(|| {
-            cx.new(|cx| InputState::new(window, cx).placeholder("Ask anything…"))
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .auto_grow(1, 8)
+                    .placeholder("Ask anything…")
+            })
+        });
+        let exec_inputs = matches!(kind, Kind::Execution).then(|| ExecutionInputs {
+            symbol: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("AAPL")
+                    .default_value("AAPL")
+            }),
+            quantity: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("100")
+                    .default_value("100")
+            }),
+            limit: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("0.00")
+                    .default_value("192.15")
+            }),
         });
         Self {
             kind,
             focus_handle,
             parent_tab_panel: None,
             chat_input,
+            exec_inputs,
         }
     }
 
+    pub fn parent_tab_panel(&self) -> Option<WeakEntity<TabPanel>> {
+        self.parent_tab_panel.clone()
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// The AI Chat input. `Some` only when `kind == Kind::AiChat`. Lets the
+    /// workspace prefill the prompt for the "Ask AI" flow.
+    pub fn chat_input(&self) -> Option<&Entity<InputState>> {
+        self.chat_input.as_ref()
+    }
+
     fn mark_focused(&self, cx: &mut App) {
+        // Singleton panels (AI Chat, Position, Execution) are host-managed:
+        // they live in pinned TabPanels and shouldn't become the "+ Panel"
+        // drop target, so we don't record their parent here. Using `self.kind`
+        // (rather than reading the parent TabPanel) is essential — this fires
+        // from inside `TabPanel::set_active_ix`'s update closure, so reading
+        // the parent's `is_pinned` would double-borrow the TabPanel.
+        if self.kind.is_singleton() {
+            return;
+        }
         let Some(tab_panel) = self.parent_tab_panel.clone() else {
             return;
         };
@@ -178,6 +246,13 @@ impl Panel for ContentPanel {
         self.parent_tab_panel = Some(tab_panel);
     }
 
+    /// Clear the cached parent on detach so callers can tell the panel is no
+    /// longer in the dock tree (e.g. user closed the tab). For drag-between
+    /// TabPanels, on_added_to immediately re-sets the parent on the destination.
+    fn on_removed(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.parent_tab_panel = None;
+    }
+
     // Tab-changes also count as focus changes. on_focus_in handles body clicks; this handles
     // tab-strip clicks where the active tab swaps.
     fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
@@ -199,6 +274,13 @@ impl Render for ContentPanel {
             Kind::SmartMoney => render_smart_money(window, cx).into_any_element(),
             Kind::AiChat => render_ai_chat(
                 self.chat_input.as_ref().expect("chat_input set for AiChat"),
+                window,
+                cx,
+            )
+            .into_any_element(),
+            Kind::Position => render_position(window, cx).into_any_element(),
+            Kind::Execution => render_execution(
+                self.exec_inputs.as_ref().expect("exec_inputs set for Execution"),
                 window,
                 cx,
             )
@@ -509,7 +591,34 @@ fn render_news(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl Int
                         .child(div().child(n.source)),
                 )
                 .child(div().text_sm().text_color(theme.foreground).child(n.headline))
+                .child(
+                    h_flex().pt_1().child(ask_ai_button(format!("news-ask-{idx}"), n)),
+                )
         }))
+}
+
+/// Build the "Ask AI" prompt for a news item — used by both the inline button
+/// and the popup dialog button. The chat input is `auto_grow`, so newlines
+/// are allowed and the box expands to fit the prefilled text.
+fn ask_ai_prompt(n: &NewsItem) -> SharedString {
+    SharedString::from(format!(
+        "What is the implication behind this news and how it affects my position?\n\n\
+         {} ({})\nSource: {}",
+        n.headline, n.tag, n.link,
+    ))
+}
+
+fn ask_ai_button(id: impl Into<SharedString>, n: &'static NewsItem) -> Button {
+    Button::new(id.into())
+        .label("Ask AI")
+        .small()
+        .ghost()
+        .icon(gpui_component::IconName::Bot)
+        .on_click(move |_, window, cx| {
+            // Don't bubble to the row's on_click which opens the dialog.
+            cx.stop_propagation();
+            window.dispatch_action(Box::new(crate::top_bar::AskAi(ask_ai_prompt(n))), cx);
+        })
 }
 
 fn open_news_dialog(n: &'static NewsItem, window: &mut Window, cx: &mut App) {
@@ -581,6 +690,22 @@ fn open_news_dialog(n: &'static NewsItem, window: &mut Window, cx: &mut App) {
                                     .href(n.link)
                                     .child(n.link),
                             ),
+                    )
+                    .child(
+                        h_flex().pt_1().child(
+                            Button::new("news-dialog-ask")
+                                .label("Ask AI")
+                                .small()
+                                .primary()
+                                .icon(gpui_component::IconName::Bot)
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(crate::top_bar::AskAi(ask_ai_prompt(n))),
+                                        cx,
+                                    );
+                                    window.close_all_dialogs(cx);
+                                }),
+                        ),
                     ),
             )
     });
@@ -945,6 +1070,178 @@ fn render_ai_chat(
                 .child(div().flex_1().child(Input::new(input)))
                 .child(Button::new("send").label("Send").small().primary()),
         )
+}
+
+// ============================================================================
+// Position
+// ============================================================================
+
+#[derive(Clone, Copy)]
+struct PositionRow {
+    symbol: &'static str,
+    side: &'static str,
+    qty: i32,
+    entry: f64,
+    last: f64,
+}
+
+const POSITIONS: &[PositionRow] = &[
+    PositionRow { symbol: "AAPL", side: "LONG",  qty: 200, entry: 180.40, last: 192.15 },
+    PositionRow { symbol: "NVDA", side: "LONG",  qty: 50,  entry: 812.00, last: 875.21 },
+    PositionRow { symbol: "TSLA", side: "SHORT", qty: 75,  entry: 268.30, last: 248.50 },
+    PositionRow { symbol: "MSFT", side: "LONG",  qty: 90,  entry: 410.20, last: 423.85 },
+];
+
+fn render_position(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl IntoElement {
+    let theme = cx.theme();
+    let bullish = theme.chart_bullish;
+    let bearish = theme.chart_bearish;
+    let muted = theme.muted_foreground;
+    let border = theme.border;
+
+    let header = h_flex()
+        .px_3()
+        .py_1p5()
+        .gap_2()
+        .text_xs()
+        .text_color(muted)
+        .border_b_1()
+        .border_color(border)
+        .child(div().w(gpui::px(72.)).child("Symbol"))
+        .child(div().w(gpui::px(56.)).child("Side"))
+        .child(div().w(gpui::px(56.)).text_right().child("Qty"))
+        .child(div().w(gpui::px(80.)).text_right().child("Entry"))
+        .child(div().w(gpui::px(80.)).text_right().child("Last"))
+        .child(div().flex_1().text_right().child("P/L"));
+
+    let rows = POSITIONS.iter().map(|p| {
+        let pl = (p.last - p.entry) * p.qty as f64
+            * if p.side == "SHORT" { -1.0 } else { 1.0 };
+        let pl_color = if pl >= 0.0 { bullish } else { bearish };
+        let side_color = if p.side == "LONG" { bullish } else { bearish };
+        h_flex()
+            .px_3()
+            .py_1()
+            .gap_2()
+            .text_xs()
+            .border_b_1()
+            .border_color(border)
+            .child(div().w(gpui::px(72.)).font_semibold().child(p.symbol))
+            .child(div().w(gpui::px(56.)).text_color(side_color).child(p.side))
+            .child(div().w(gpui::px(56.)).text_right().child(format!("{}", p.qty)))
+            .child(
+                div()
+                    .w(gpui::px(80.))
+                    .text_right()
+                    .text_color(muted)
+                    .child(format!("{:.2}", p.entry)),
+            )
+            .child(
+                div()
+                    .w(gpui::px(80.))
+                    .text_right()
+                    .child(format!("{:.2}", p.last)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_right()
+                    .text_color(pl_color)
+                    .child(format!("{:+.2}", pl)),
+            )
+    });
+
+    v_flex().w_full().child(header).children(rows)
+}
+
+// ============================================================================
+// Execution
+// ============================================================================
+
+fn render_execution(
+    inputs: &ExecutionInputs,
+    _window: &mut Window,
+    cx: &mut Context<ContentPanel>,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let bullish = theme.chart_bullish;
+    let bearish = theme.chart_bearish;
+
+    let field = |label: &'static str, input: &Entity<InputState>| {
+        v_flex()
+            .gap_1()
+            .child(div().text_xs().text_color(muted).child(label))
+            .child(Input::new(input).small())
+    };
+
+    let symbol = inputs.symbol.clone();
+    let qty = inputs.quantity.clone();
+    let limit = inputs.limit.clone();
+
+    let buy = {
+        let symbol = symbol.clone();
+        let qty = qty.clone();
+        let limit = limit.clone();
+        Button::new("buy").label("BUY").small().primary().on_click(
+            move |_, window, cx| place_order("BUY", &symbol, &qty, &limit, window, cx),
+        )
+    };
+    let sell = {
+        let symbol = symbol.clone();
+        let qty = qty.clone();
+        let limit = limit.clone();
+        Button::new("sell").label("SELL").small().primary().on_click(
+            move |_, window, cx| place_order("SELL", &symbol, &qty, &limit, window, cx),
+        )
+    };
+
+    v_flex()
+        .w_full()
+        .p_3()
+        .gap_3()
+        .child(div().text_sm().font_semibold().child("Quick Order"))
+        .child(field("Symbol", &inputs.symbol))
+        .child(field("Quantity", &inputs.quantity))
+        .child(field("Limit Price", &inputs.limit))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(div().bg(bullish).rounded(gpui::px(4.)).child(buy))
+                .child(div().bg(bearish).rounded(gpui::px(4.)).child(sell)),
+        )
+}
+
+fn place_order(
+    side: &'static str,
+    symbol: &Entity<InputState>,
+    qty: &Entity<InputState>,
+    limit: &Entity<InputState>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let symbol_str = symbol.read(cx).value();
+    let qty_str = qty.read(cx).value();
+    let limit_str = limit.read(cx).value();
+
+    if symbol_str.trim().is_empty() || qty_str.trim().is_empty() {
+        window.push_notification(
+            Notification::warning("Symbol and quantity are required").title("Order rejected"),
+            cx,
+        );
+        return;
+    }
+
+    let summary = SharedString::from(format!(
+        "{side} {qty_str} {sym} @ {limit_str}",
+        sym = symbol_str.trim(),
+        qty_str = qty_str.trim(),
+        limit_str = limit_str.trim(),
+    ));
+    window.push_notification(
+        Notification::success(summary).title("Order placed"),
+        cx,
+    );
 }
 
 // Convenience re-export for callers that still use the old `PanelKind` name.
