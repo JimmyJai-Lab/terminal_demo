@@ -7,12 +7,12 @@ use num_traits::{Num, ToPrimitive};
 use crate::{
     ActiveTheme,
     plot::{
-        AXIS_GAP, Grid, Plot, PlotAxis, origin_point,
+        AXIS_GAP, AxisLabelSide, Grid, Plot, PlotAxis, origin_point,
         scale::{Scale, ScaleBand, ScaleLinear, Sealed},
     },
 };
 
-use super::build_band_labels;
+use super::{build_band_labels, build_y_price_labels, nice_y_axis_gap};
 
 #[derive(IntoPlot)]
 pub struct CandlestickChart<T, X, Y>
@@ -30,6 +30,17 @@ where
     tick_margin: usize,
     body_width_ratio: f32,
     x_axis: bool,
+    /// Show price ticks on the right edge. When enabled the chart reserves
+    /// `nice_y_axis_gap()` pixels on the right for label text.
+    y_axis: bool,
+    /// Approximate number of price ticks to draw when `y_axis` is on; the
+    /// actual count may differ slightly because tick values are snapped to
+    /// nice round numbers.
+    y_tick_count: usize,
+    /// Optional explicit price-axis domain `(min, max)`. When set, the chart
+    /// uses this range instead of auto-fitting to the visible data — letting
+    /// callers lock the y view across renders for manual zoom/pan UX.
+    y_domain: Option<(Y, Y)>,
     grid: bool,
 }
 
@@ -52,6 +63,9 @@ where
             tick_margin: 1,
             body_width_ratio: 0.8,
             x_axis: true,
+            y_axis: false,
+            y_tick_count: 5,
+            y_domain: None,
             grid: true,
         }
     }
@@ -99,6 +113,28 @@ where
         self
     }
 
+    /// Show or hide the price (y-axis) tick labels on the right edge.
+    ///
+    /// Default is false — older callers that fill the full width keep working
+    /// unchanged; opt in when you want price labels.
+    pub fn y_axis(mut self, y_axis: bool) -> Self {
+        self.y_axis = y_axis;
+        self
+    }
+
+    /// Approximate number of price ticks to draw. Default is 5.
+    pub fn y_tick_count(mut self, y_tick_count: usize) -> Self {
+        self.y_tick_count = y_tick_count.max(2);
+        self
+    }
+
+    /// Lock the price-axis domain to `(min, max)`. Pass `None` to fall back
+    /// to the auto-fit behaviour (default).
+    pub fn y_domain(mut self, domain: Option<(Y, Y)>) -> Self {
+        self.y_domain = domain;
+        self
+    }
+
     pub fn grid(mut self, grid: bool) -> Self {
         self.grid = grid;
         self
@@ -121,7 +157,9 @@ where
             return;
         };
 
-        let width = bounds.size.width.as_f32();
+        let total_width = bounds.size.width.as_f32();
+        let y_axis_gap = if self.y_axis { nice_y_axis_gap() } else { 0. };
+        let width = (total_width - y_axis_gap).max(0.);
         let axis_gap = if self.x_axis { AXIS_GAP } else { 0. };
         let height = bounds.size.height.as_f32() - axis_gap;
 
@@ -131,15 +169,20 @@ where
             .padding_outer(0.2);
         let band_width = x.band_width();
 
-        // Y scale
-        let all_values: Vec<Y> = self
-            .data
-            .iter()
-            .flat_map(|d| vec![high_fn(d), low_fn(d), open_fn(d), close_fn(d)])
-            .collect();
-        let y = ScaleLinear::new(all_values, vec![height, 10.]);
+        // Y scale — explicit domain wins over auto-fit so callers can lock
+        // the y view across renders for manual zoom/pan UX.
+        let y = if let Some((min, max)) = self.y_domain {
+            ScaleLinear::new(vec![min, max], vec![height, 10.])
+        } else {
+            let all_values: Vec<Y> = self
+                .data
+                .iter()
+                .flat_map(|d| vec![high_fn(d), low_fn(d), open_fn(d), close_fn(d)])
+                .collect();
+            ScaleLinear::new(all_values, vec![height, 10.])
+        };
 
-        // Draw X axis
+        // Draw axes
         let mut axis = PlotAxis::new().stroke(cx.theme().border);
         if self.x_axis {
             let labels = build_band_labels(
@@ -151,6 +194,36 @@ where
                 cx.theme().muted_foreground,
             );
             axis = axis.x(height).x_label(labels);
+        }
+        if self.y_axis {
+            // Top of the plot is at pixel y=10 (matching the y scale's range
+            // upper bound above); bottom is at `height`. Use the explicit
+            // y_domain when locked so the labels match what the chart paints.
+            let y_label_ticks = if let Some((min, max)) = self.y_domain {
+                build_y_price_labels(
+                    [min, max],
+                    10.,
+                    height,
+                    self.y_tick_count,
+                    cx.theme().muted_foreground,
+                )
+            } else {
+                let values = self.data.iter().flat_map(|d| {
+                    [open_fn(d), high_fn(d), low_fn(d), close_fn(d)]
+                });
+                build_y_price_labels(
+                    values,
+                    10.,
+                    height,
+                    self.y_tick_count,
+                    cx.theme().muted_foreground,
+                )
+            };
+            axis = axis
+                .y(width)
+                .y_axis(false) // labels only — no vertical axis line
+                .y_label_side(AxisLabelSide::End)
+                .y_label(y_label_ticks);
         }
         axis.paint(&bounds, window, cx);
 
@@ -194,6 +267,22 @@ where
             else {
                 continue;
             };
+            // When `y_domain` is locked tighter than the data, prices outside
+            // the view would paint above/below the canvas. Clamp to the plot
+            // band so partial candles still render but stay inside bounds;
+            // skip candles that fall fully outside (every value at one edge).
+            let top = 10.;
+            let bot = height;
+            let all_above = high_y < top && low_y < top;
+            let all_below = high_y > bot && low_y > bot;
+            if all_above || all_below {
+                continue;
+            }
+            let clamp_y = |v: f32| v.clamp(top, bot);
+            let open_y = clamp_y(open_y);
+            let high_y = clamp_y(high_y);
+            let low_y = clamp_y(low_y);
+            let close_y = clamp_y(close_y);
 
             // Determine if bullish (close > open) or bearish (close < open)
             let is_bullish = close > open;

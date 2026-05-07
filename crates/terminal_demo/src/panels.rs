@@ -1,26 +1,31 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
+    Action, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    Global, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, ElementExt as _, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    chart::{CandlestickChart, LineChart},
+    chart::{CandlestickChart, nice_y_axis_gap},
     description_list::DescriptionList,
     dialog::DialogButtonProps,
     dock::{Panel, PanelEvent, PanelView, TabPanel, register_panel},
     h_flex,
     input::{Input, InputState},
     link::Link,
+    menu::DropdownMenu as _,
     notification::Notification,
+    plot::AXIS_GAP,
     v_flex,
 };
+use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -122,6 +127,14 @@ pub fn build_kind(kind: Kind, window: &mut Window, cx: &mut App) -> Arc<dyn Pane
     }
 }
 
+/// Per-chart-panel action: switch the chart's underlying asset. Dispatched
+/// from the symbol-selector dropdown; the Chart panel handles it directly via
+/// `.on_action` registered on its outer div, which receives the dispatch
+/// because the popup menu sets its `action_context` to the panel's focus.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = terminal_demo, no_json)]
+pub struct ChangeChartSymbol(pub SharedString);
+
 pub struct ContentPanel {
     kind: Kind,
     focus_handle: FocusHandle,
@@ -129,6 +142,9 @@ pub struct ContentPanel {
     chat_input: Option<Entity<InputState>>,
     /// Execution-panel inputs. Set only when `kind == Kind::Execution`.
     exec_inputs: Option<ExecutionInputs>,
+    /// Chart-panel viewport state (symbol, candles, pan/zoom). Set only when
+    /// `kind == Kind::Chart`.
+    chart_state: Option<ChartState>,
 }
 
 #[derive(Clone)]
@@ -168,13 +184,29 @@ impl ContentPanel {
                     .default_value("192.15")
             }),
         });
+        let chart_state = matches!(kind, Kind::Chart).then(|| ChartState::new(CHART_SYMBOLS[0].0));
         Self {
             kind,
             focus_handle,
             parent_tab_panel: None,
             chat_input,
             exec_inputs,
+            chart_state,
         }
+    }
+
+    fn on_change_chart_symbol(
+        &mut self,
+        action: &ChangeChartSymbol,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.chart_state.as_mut() else { return; };
+        if state.symbol == action.0 {
+            return;
+        }
+        *state = ChartState::new(action.0.as_ref());
+        cx.notify();
     }
 
     pub fn parent_tab_panel(&self) -> Option<WeakEntity<TabPanel>> {
@@ -266,7 +298,13 @@ impl Render for ContentPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let raw_body = match self.kind {
             Kind::Watchlist => render_watchlist(window, cx).into_any_element(),
-            Kind::Chart => render_chart(window, cx).into_any_element(),
+            Kind::Chart => render_chart(
+                self.chart_state.as_ref().expect("chart_state set for Chart"),
+                self.focus_handle.clone(),
+                window,
+                cx,
+            )
+            .into_any_element(),
             Kind::Details => render_details(window, cx).into_any_element(),
             Kind::NewsFeed => render_news(window, cx).into_any_element(),
             Kind::Portfolio => render_portfolio(window, cx).into_any_element(),
@@ -290,9 +328,10 @@ impl Render for ContentPanel {
             ),
         };
         // AiChat manages its own internal scroll region (so its input bar stays pinned at
-        // the bottom). Every other kind gets a single outer scroll wrapper so long lists
-        // don't get clipped when the panel shrinks.
-        let body = if matches!(self.kind, Kind::AiChat) {
+        // the bottom). Chart fills the available space so the canvas can flex with the
+        // panel (no vertical scroll). Every other kind gets a single outer scroll wrapper
+        // so long lists don't get clipped when the panel shrinks.
+        let body = if matches!(self.kind, Kind::AiChat | Kind::Chart) {
             raw_body
         } else {
             div()
@@ -319,6 +358,15 @@ impl Render for ContentPanel {
                 MouseButton::Left,
                 cx.listener(|this, _ev, _window, cx| this.mark_focused(cx)),
             )
+            // `track_focus` is the focus channel that the chart's symbol-selector
+            // popup uses to dispatch `ChangeChartSymbol` back into this panel.
+            // We scope it to Chart only because gpui's web focus mechanism
+            // creates a hidden <input>, and broadly applied focus tracking pops
+            // the soft keyboard on mobile (see CLAUDE.md).
+            .when(matches!(self.kind, Kind::Chart), |this| {
+                this.track_focus(&self.focus_handle)
+                    .on_action(cx.listener(Self::on_change_chart_symbol))
+            })
             .size_full()
             .border_2()
             .border_color(border_color)
@@ -405,18 +453,221 @@ struct Candle {
     close: f64,
 }
 
-fn sample_candles() -> Vec<Candle> {
-    // 30 deterministic dummy candles, gently trending up.
-    let mut v = Vec::with_capacity(30);
-    let mut close = 180.0;
-    for i in 0..30 {
-        let drift = ((i as f64 * 0.7).sin() * 4.0) + (i as f64 * 0.4);
-        let open = close + ((i as f64 * 1.3).cos() * 1.5);
-        close = open + drift;
-        let high = open.max(close) + 1.5 + (i as f64 * 0.13).abs() % 2.0;
-        let low = open.min(close) - 1.0 - (i as f64 * 0.17).abs() % 2.0;
+const CHART_SYMBOLS: &[(&str, &str, &str)] = &[
+    ("AAPL",  "Apple Inc.",         "NASDAQ"),
+    ("MSFT",  "Microsoft Corp.",    "NASDAQ"),
+    ("NVDA",  "NVIDIA Corp.",       "NASDAQ"),
+    ("GOOGL", "Alphabet Inc.",      "NASDAQ"),
+    ("TSLA",  "Tesla, Inc.",        "NASDAQ"),
+    ("META",  "Meta Platforms",     "NASDAQ"),
+    ("AMZN",  "Amazon.com",         "NASDAQ"),
+    ("BRK.B", "Berkshire Hathaway", "NYSE"),
+];
+
+/// Real 1h OHLC bars fetched by `scripts/fetch_chart_data.py`. Embedded so
+/// the WASM bundle is self-contained — no network call at runtime.
+const CHART_DATA_RAW: &str = include_str!("../assets/chart_data.json");
+
+const CHART_DEFAULT_VIEW: f32 = 60.0;
+const CHART_MIN_VIEW: f32 = 8.0;
+/// Fallback candle count used only when a symbol isn't present in the
+/// embedded JSON (e.g. fetch hasn't been run, or the symbol is new).
+const CHART_FALLBACK_CANDLES: usize = 240;
+
+#[derive(Deserialize)]
+struct RawCandle {
+    t: String,
+    o: f64,
+    h: f64,
+    l: f64,
+    c: f64,
+}
+
+#[derive(Deserialize)]
+struct RawSeries {
+    bars: Vec<RawCandle>,
+}
+
+/// Parse the embedded JSON once into a symbol-keyed candle map. Lazy so the
+/// ~200KB JSON parse cost is paid on first chart open, not at startup.
+fn chart_data() -> &'static HashMap<String, Vec<Candle>> {
+    static DATA: OnceLock<HashMap<String, Vec<Candle>>> = OnceLock::new();
+    DATA.get_or_init(|| {
+        let raw: HashMap<String, RawSeries> = serde_json::from_str(CHART_DATA_RAW)
+            .expect("embedded chart_data.json is malformed");
+        raw.into_iter()
+            .map(|(symbol, series)| {
+                let candles = series
+                    .bars
+                    .into_iter()
+                    .map(|b| Candle {
+                        date: SharedString::from(b.t),
+                        open: b.o,
+                        high: b.h,
+                        low: b.l,
+                        close: b.c,
+                    })
+                    .collect();
+                (symbol, candles)
+            })
+            .collect()
+    })
+}
+
+pub struct ChartState {
+    symbol: SharedString,
+    name: SharedString,
+    exchange: SharedString,
+    candles: Vec<Candle>,
+    /// Fractional left-edge index of the visible window. Fractional so pan
+    /// stays smooth at sub-candle granularity even though the chart paints
+    /// integer-indexed bars.
+    view_start: f32,
+    /// Number of candles visible in the viewport (fractional for the same
+    /// reason as `view_start`).
+    view_size: f32,
+    /// `(mouse_down_position, view_start_at_down)` — set on left-mouse-down,
+    /// cleared on up. While present, mouse-move pans the view.
+    drag_anchor: Option<(Point<Pixels>, f32)>,
+    /// Last painted bounds of the chart canvas. Captured via `on_prepaint`
+    /// and consumed by drag/wheel handlers to convert pixel deltas into
+    /// candle-space deltas.
+    bounds: Option<Bounds<Pixels>>,
+    /// When true the price (y) axis auto-fits to the visible candles each
+    /// render. Flipping to false locks the axis to (`y_min`, `y_max`) so
+    /// users can drag/wheel the right edge to scale price independently.
+    /// Restored to true via double-click on the right axis.
+    y_auto: bool,
+    /// Locked price-axis range. Only consulted when `y_auto` is false.
+    y_min: f64,
+    y_max: f64,
+    /// Drag anchor for vertical-only manipulation on the right axis:
+    /// `(mouse_down_position, y_min_at_down, y_max_at_down)`.
+    y_drag_anchor: Option<(Point<Pixels>, f64, f64)>,
+    /// Drag anchor for horizontal-only zoom on the bottom axis:
+    /// `(mouse_down_position, view_size_at_down)`.
+    x_axis_drag_anchor: Option<(Point<Pixels>, f32)>,
+}
+
+impl ChartState {
+    fn new(symbol: &str) -> Self {
+        let (sym, name, exchange) = CHART_SYMBOLS
+            .iter()
+            .copied()
+            .find(|(s, _, _)| *s == symbol)
+            .unwrap_or(CHART_SYMBOLS[0]);
+        // Prefer the real fetched 1h bars; only synthesize when the JSON
+        // doesn't carry this symbol (keeps the demo working if someone adds
+        // a new ticker before re-running the fetch script).
+        let candles = chart_data()
+            .get(sym)
+            .cloned()
+            .unwrap_or_else(|| generate_candles(sym));
+        let total = candles.len() as f32;
+        Self {
+            symbol: SharedString::from(sym),
+            name: SharedString::from(name),
+            exchange: SharedString::from(exchange),
+            candles,
+            view_start: (total - CHART_DEFAULT_VIEW).max(0.0),
+            view_size: CHART_DEFAULT_VIEW.min(total),
+            drag_anchor: None,
+            bounds: None,
+            y_auto: true,
+            y_min: 0.0,
+            y_max: 0.0,
+            y_drag_anchor: None,
+            x_axis_drag_anchor: None,
+        }
+    }
+
+    fn clamp(&mut self) {
+        let total = self.candles.len() as f32;
+        self.view_size = self.view_size.clamp(CHART_MIN_VIEW.min(total), total);
+        let max_start = (total - self.view_size).max(0.0);
+        self.view_start = self.view_start.clamp(0.0, max_start);
+    }
+
+    fn visible(&self) -> Vec<Candle> {
+        let start = self.view_start.max(0.0).floor() as usize;
+        let take = self.view_size.ceil() as usize;
+        let end = (start + take).min(self.candles.len());
+        self.candles[start..end].to_vec()
+    }
+
+    /// Auto-fit price range from the visible candles. Returned `(min, max)`
+    /// with a small padding so candles don't touch the chart edges.
+    fn auto_y_range(&self) -> (f64, f64) {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for c in self.visible() {
+            lo = lo.min(c.low);
+            hi = hi.max(c.high);
+        }
+        if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+            return (0.0, 1.0);
+        }
+        let pad = (hi - lo) * 0.05;
+        (lo - pad, hi + pad)
+    }
+
+    /// Lock the price axis to the current auto-fit range. Called the moment
+    /// the user starts manipulating the right axis so subsequent drag/wheel
+    /// moves work from a stable baseline instead of fighting auto-fit.
+    fn freeze_y_if_auto(&mut self) {
+        if self.y_auto {
+            let (lo, hi) = self.auto_y_range();
+            self.y_min = lo;
+            self.y_max = hi;
+            self.y_auto = false;
+        }
+    }
+
+    fn reset_y_auto(&mut self) {
+        self.y_auto = true;
+        self.y_drag_anchor = None;
+    }
+
+    /// Reset the time axis to the default trailing window (most recent
+    /// `CHART_DEFAULT_VIEW` candles). Used by double-click on the bottom axis.
+    fn reset_x(&mut self) {
+        let total = self.candles.len() as f32;
+        self.view_size = CHART_DEFAULT_VIEW.min(total);
+        self.view_start = (total - self.view_size).max(0.0);
+        self.x_axis_drag_anchor = None;
+    }
+}
+
+/// Deterministic per-symbol synthetic candle generator. Used as a fallback
+/// when a symbol isn't present in the embedded fetched dataset. FNV-hashes
+/// the symbol into a seed, then walks bars with sin/cos drift so each symbol
+/// gets a distinct but stable price series.
+fn generate_candles(symbol: &str) -> Vec<Candle> {
+    let mut seed: u64 = 0xcbf29ce484222325;
+    for b in symbol.bytes() {
+        seed ^= b as u64;
+        seed = seed.wrapping_mul(0x100000001b3);
+    }
+    let base = 50.0 + (seed % 800) as f64;
+    let trend_sign = if (seed >> 17) & 1 == 0 { 1.0 } else { -1.0 };
+    let trend = trend_sign * (((seed >> 9) % 7) as f64 * 0.05 + 0.05);
+
+    let mut close = base;
+    let mut v = Vec::with_capacity(CHART_FALLBACK_CANDLES);
+    for i in 0..CHART_FALLBACK_CANDLES {
+        let t = i as f64;
+        let s = ((seed.wrapping_add(i as u64 * 2654435761)) & 0xffff) as f64 / 65535.0 - 0.5;
+        let drift = (t * 0.13).sin() * (base * 0.020)
+            + (t * 0.041).cos() * (base * 0.010)
+            + s * (base * 0.015)
+            + trend;
+        let open = close + (t * 1.07 + (seed % 13) as f64).cos() * (base * 0.005);
+        close = (open + drift).max(base * 0.30);
+        let amp = (base * 0.005) + ((t * 0.21).sin().abs() * base * 0.012);
+        let high = open.max(close) + amp;
+        let low = (open.min(close) - amp).max(base * 0.20);
         v.push(Candle {
-            date: SharedString::from(format!("D{:02}", i + 1)),
+            date: SharedString::from(format!("D{:03}", i + 1)),
             open,
             high,
             low,
@@ -426,59 +677,328 @@ fn sample_candles() -> Vec<Candle> {
     v
 }
 
-fn render_chart(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl IntoElement {
+fn render_chart(
+    state: &ChartState,
+    focus: FocusHandle,
+    _window: &mut Window,
+    cx: &mut Context<ContentPanel>,
+) -> impl IntoElement {
     let theme = cx.theme();
-    let candles = sample_candles();
-    let line_data: Vec<Candle> = candles.clone();
+    let visible = state.visible();
+    let last_close = visible.last().map(|c| c.close).unwrap_or(0.0);
+    let first_close = visible.first().map(|c| c.close).unwrap_or(last_close);
+    let price_color = if last_close >= first_close {
+        theme.chart_bullish
+    } else {
+        theme.chart_bearish
+    };
+
+    // Symbol-selector dropdown. Setting `action_context` to the panel's focus
+    // handle ensures `ChangeChartSymbol` dispatches up through *this* panel
+    // (not whichever element happened to have focus when the menu opened),
+    // so multiple Chart panels stay independent.
+    let dropdown_focus = focus.clone();
+    let symbol_btn = Button::new("chart-symbol-select")
+        .label(state.symbol.clone())
+        .small()
+        .ghost()
+        .dropdown_menu(move |menu, _, _| {
+            let mut menu = menu.action_context(dropdown_focus.clone());
+            for (sym, name, _ex) in CHART_SYMBOLS {
+                menu = menu.menu(
+                    SharedString::from(format!("{}  ·  {}", sym, name)),
+                    Box::new(ChangeChartSymbol(SharedString::from(*sym))),
+                );
+            }
+            menu
+        });
+
+    let candles_for_main = visible;
+    let entity = cx.entity();
+    let dragging = state.drag_anchor.is_some();
+    // Auto-thin x-axis labels: aim for ~one label per `LABEL_PIXEL_BUDGET`
+    // pixels of canvas width so timestamps don't overlap. Falls back to a
+    // density derived from view_size on the very first frame, before bounds
+    // have been captured by `on_prepaint`.
+    let tick_margin = {
+        const LABEL_PIXEL_BUDGET: f32 = 70.0;
+        let approx_width = state
+            .bounds
+            .map(|b| b.size.width.as_f32())
+            .unwrap_or(600.0);
+        let max_labels = (approx_width / LABEL_PIXEL_BUDGET).floor().max(2.0) as usize;
+        ((state.view_size as usize).max(1) / max_labels).max(1)
+    };
+    // Locked y-axis range when the user has manipulated the right axis;
+    // None means the chart auto-fits price each render.
+    let y_domain = (!state.y_auto).then(|| (state.y_min, state.y_max));
+
+    // Right (price) axis interaction zone — overlays the chart's reserved
+    // y-label gutter. Vertical drag scales the locked y range; wheel zooms
+    // it; double-click re-enables auto-fit.
+    let y_axis_gap = nice_y_axis_gap();
+    let right_axis = div()
+        .id("chart-right-axis")
+        .absolute()
+        .right_0()
+        .top_0()
+        .bottom(gpui::px(AXIS_GAP))
+        .w(gpui::px(y_axis_gap))
+        .cursor_ns_resize()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
+                cx.stop_propagation();
+                let Some(state) = this.chart_state.as_mut() else { return; };
+                if ev.click_count >= 2 {
+                    state.reset_y_auto();
+                    cx.notify();
+                    return;
+                }
+                state.freeze_y_if_auto();
+                state.y_drag_anchor = Some((ev.position, state.y_min, state.y_max));
+                cx.notify();
+            }),
+        )
+        .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+            let Some(state) = this.chart_state.as_mut() else { return; };
+            if !ev.dragging() {
+                if state.y_drag_anchor.take().is_some() {
+                    cx.notify();
+                }
+                return;
+            }
+            let Some((start_pos, start_lo, start_hi)) = state.y_drag_anchor else { return; };
+            let Some(bounds) = state.bounds else { return; };
+            let h = bounds.size.height.as_f32();
+            if h <= 0.0 {
+                return;
+            }
+            let dy = ev.position.y.as_f32() - start_pos.y.as_f32();
+            // Drag down → range expands (zoom out); drag up → contracts.
+            let factor = (dy / h).exp() as f64;
+            let center = (start_lo + start_hi) / 2.0;
+            state.y_min = center - (center - start_lo) * factor;
+            state.y_max = center + (start_hi - center) * factor;
+            cx.notify();
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _w, cx| {
+                let Some(state) = this.chart_state.as_mut() else { return; };
+                if state.y_drag_anchor.take().is_some() {
+                    cx.notify();
+                }
+            }),
+        )
+        .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, w, cx| {
+            cx.stop_propagation();
+            let Some(state) = this.chart_state.as_mut() else { return; };
+            let delta_y = ev.delta.pixel_delta(w.line_height()).y.as_f32();
+            if delta_y == 0.0 {
+                return;
+            }
+            state.freeze_y_if_auto();
+            let factor = (-delta_y / 120.0).exp() as f64;
+            let center = (state.y_min + state.y_max) / 2.0;
+            state.y_min = center - (center - state.y_min) * factor;
+            state.y_max = center + (state.y_max - center) * factor;
+            cx.notify();
+        }));
+
+    // Bottom (time) axis interaction zone. Horizontal drag scales view_size
+    // around its centre; wheel zooms; double-click resets to the trailing
+    // default window.
+    let bottom_axis = div()
+        .id("chart-bottom-axis")
+        .absolute()
+        .left_0()
+        .bottom_0()
+        .right(gpui::px(y_axis_gap))
+        .h(gpui::px(AXIS_GAP))
+        .cursor_ew_resize()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
+                cx.stop_propagation();
+                let Some(state) = this.chart_state.as_mut() else { return; };
+                if ev.click_count >= 2 {
+                    state.reset_x();
+                    cx.notify();
+                    return;
+                }
+                state.x_axis_drag_anchor = Some((ev.position, state.view_size));
+                cx.notify();
+            }),
+        )
+        .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+            let Some(state) = this.chart_state.as_mut() else { return; };
+            if !ev.dragging() {
+                if state.x_axis_drag_anchor.take().is_some() {
+                    cx.notify();
+                }
+                return;
+            }
+            let Some((start_pos, start_size)) = state.x_axis_drag_anchor else { return; };
+            let Some(bounds) = state.bounds else { return; };
+            let w = bounds.size.width.as_f32();
+            if w <= 0.0 {
+                return;
+            }
+            let dx = ev.position.x.as_f32() - start_pos.x.as_f32();
+            // Drag right → view widens (more candles), drag left → narrows.
+            let factor = (dx / w).exp();
+            let center = state.view_start + state.view_size / 2.0;
+            state.view_size = (start_size * factor).max(CHART_MIN_VIEW);
+            state.view_start = center - state.view_size / 2.0;
+            state.clamp();
+            cx.notify();
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _w, cx| {
+                let Some(state) = this.chart_state.as_mut() else { return; };
+                if state.x_axis_drag_anchor.take().is_some() {
+                    cx.notify();
+                }
+            }),
+        )
+        .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, w, cx| {
+            cx.stop_propagation();
+            let Some(state) = this.chart_state.as_mut() else { return; };
+            let delta_y = ev.delta.pixel_delta(w.line_height()).y.as_f32();
+            if delta_y == 0.0 {
+                return;
+            }
+            let factor = (-delta_y / 120.0).exp();
+            let center = state.view_start + state.view_size / 2.0;
+            state.view_size *= factor;
+            state.view_start = center - state.view_size / 2.0;
+            state.clamp();
+            cx.notify();
+        }));
+
+    let canvas = div()
+        .id("chart-canvas")
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .map(|this| if dragging { this.cursor_grabbing() } else { this.cursor_grab() })
+        .on_prepaint({
+            let entity = entity.clone();
+            move |bounds, _, cx| {
+                entity.update(cx, |this, _| {
+                    if let Some(state) = this.chart_state.as_mut() {
+                        state.bounds = Some(bounds);
+                    }
+                });
+            }
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
+                let Some(state) = this.chart_state.as_mut() else { return; };
+                state.drag_anchor = Some((ev.position, state.view_start));
+                cx.notify();
+            }),
+        )
+        .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+            let Some(state) = this.chart_state.as_mut() else { return; };
+            if !ev.dragging() {
+                if state.drag_anchor.take().is_some() {
+                    cx.notify();
+                }
+                return;
+            }
+            let Some((start_pos, start_view)) = state.drag_anchor else { return; };
+            let Some(bounds) = state.bounds else { return; };
+            let width = bounds.size.width.as_f32();
+            if width <= 0.0 {
+                return;
+            }
+            let dx = ev.position.x.as_f32() - start_pos.x.as_f32();
+            let candles_per_px = state.view_size / width;
+            state.view_start = start_view - dx * candles_per_px;
+            state.clamp();
+            cx.notify();
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _w, cx| {
+                let Some(state) = this.chart_state.as_mut() else { return; };
+                if state.drag_anchor.take().is_some() {
+                    cx.notify();
+                }
+            }),
+        )
+        .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, w, cx| {
+            let Some(state) = this.chart_state.as_mut() else { return; };
+            let delta_y = ev.delta.pixel_delta(w.line_height()).y.as_f32();
+            if delta_y == 0.0 {
+                return;
+            }
+            // Wheel-up (positive delta_y) zooms IN (smaller view_size); wheel-down zooms out.
+            let factor = (-delta_y / 120.0).exp();
+            // Anchor the zoom around the cursor's x within the chart, like TradingView.
+            let anchor_offset = state
+                .bounds
+                .map(|b| {
+                    let w = b.size.width.as_f32();
+                    if w > 0.0 {
+                        ((ev.position.x.as_f32() - b.origin.x.as_f32()) / w).clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    }
+                })
+                .unwrap_or(0.5);
+            let world_anchor = state.view_start + state.view_size * anchor_offset;
+            state.view_size *= factor;
+            state.view_start = world_anchor - state.view_size * anchor_offset;
+            state.clamp();
+            cx.notify();
+        }))
+        .child(
+            CandlestickChart::new(candles_for_main)
+                .x(|c: &Candle| c.date.clone())
+                .open(|c: &Candle| c.open)
+                .close(|c: &Candle| c.close)
+                .high(|c: &Candle| c.high)
+                .low(|c: &Candle| c.low)
+                .tick_margin(tick_margin)
+                .y_axis(true)
+                .y_domain(y_domain),
+        )
+        // Axis zones go AFTER the chart so they sit on top in z-order and
+        // get hit-tested first — their handlers `cx.stop_propagation()` to
+        // keep mouse-down from also arming the canvas's pan drag.
+        .child(right_axis)
+        .child(bottom_axis);
 
     v_flex()
-        .w_full()
+        .size_full()
         .p_3()
         .gap_2()
         .child(
             h_flex()
                 .gap_3()
-                .items_baseline()
-                .child(div().text_lg().font_semibold().child("AAPL"))
+                .items_center()
+                .child(symbol_btn)
                 .child(
                     div()
                         .text_color(theme.muted_foreground)
                         .text_sm()
-                        .child("Apple Inc. · NASDAQ"),
+                        .child(format!("{} · {}", state.name, state.exchange)),
                 )
                 .child(div().flex_1())
                 .child(
                     div()
-                        .text_color(theme.chart_bullish)
+                        .text_color(price_color)
                         .font_semibold()
-                        .child(format!("${:.2}", candles.last().map(|c| c.close).unwrap_or(0.))),
+                        .child(format!("${:.2}", last_close)),
                 ),
         )
-        .child(
-            div()
-                .h(gpui::px(220.))
-                .w_full()
-                .child(
-                    CandlestickChart::new(candles)
-                        .x(|c: &Candle| c.date.clone())
-                        .open(|c: &Candle| c.open)
-                        .close(|c: &Candle| c.close)
-                        .high(|c: &Candle| c.high)
-                        .low(|c: &Candle| c.low),
-                ),
-        )
-        .child(
-            div()
-                .h(gpui::px(120.))
-                .w_full()
-                .child(
-                    LineChart::new(line_data)
-                        .x(|c: &Candle| c.date.clone())
-                        .y(|c: &Candle| c.close)
-                        .stroke(theme.chart_1)
-                        .natural(),
-                ),
-        )
+        .child(canvas)
 }
 
 // ============================================================================
