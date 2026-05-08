@@ -1,9 +1,6 @@
-use std::time::Duration;
-
-use chrono::{DateTime, Local};
 use crate::persistence::SavedLayouts;
 use gpui::{
-    Action, Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Task,
+    Action, Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     Window, actions, div, px,
 };
 use gpui_component::{
@@ -75,7 +72,6 @@ pub struct DeleteLayout(pub SharedString);
 
 pub struct TopBar {
     title: SharedString,
-    now: DateTime<Local>,
     /// Display name + writability for the currently active layout, shown on
     /// the layout button. The host (TerminalWorkspace) pushes updates via
     /// `set_current_layout` whenever a preset/saved layout is applied.
@@ -89,42 +85,19 @@ pub struct TopBar {
     /// whenever layouts change — avoids hitting localStorage / disk on every
     /// TopBar render.
     saved_layouts: SavedLayouts,
-    _tick_task: Task<()>,
 }
 
 impl TopBar {
     pub fn new(
         title: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
     ) -> Self {
-        // Tick once per second so the seconds field stays accurate. The cost is one re-render
-        // of the top bar per second; the rest of the workspace is unaffected.
-        let _tick_task = cx.spawn_in(window, async move |this, window| {
-            loop {
-                window
-                    .background_executor()
-                    .timer(Duration::from_secs(1))
-                    .await;
-                if this
-                    .update(window, |this, cx| {
-                        this.now = Local::now();
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-
         Self {
             title: title.into(),
-            now: Local::now(),
             current_layout_label: SharedString::from("Layout"),
             current_layout_overwritable: false,
             saved_layouts: crate::persistence::load_layouts(),
-            _tick_task,
         }
     }
 
@@ -251,20 +224,6 @@ impl Render for TopBar {
             .ghost()
             .on_click(|_, window, cx| open_settings_dialog(window, cx));
 
-        // %a = Mon, %b = May, %d = 06; %H:%M:%S 24h; %:z = +08:00
-        let date_str = SharedString::from(self.now.format("%a, %b %d %Y").to_string());
-        let time_str = SharedString::from(self.now.format("%H:%M:%S").to_string());
-        let tz_str = SharedString::from(format!("UTC{}", self.now.format("%:z")));
-
-        let clock = div()
-            .flex()
-            .flex_row()
-            .items_baseline()
-            .gap_2()
-            .child(div().text_sm().font_semibold().child(time_str))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(date_str))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(tz_str));
-
         div()
             .h(px(36.))
             .w_full()
@@ -283,8 +242,6 @@ impl Render for TopBar {
                     .child(self.title.clone()),
             )
             .child(div().flex_1())
-            .child(clock)
-            .child(div().w(px(8.)))
             .child(add_menu)
             .child(layout_menu)
             .child(save_layout_btn)

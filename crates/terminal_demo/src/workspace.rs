@@ -14,6 +14,7 @@ use gpui_component::{
     },
 };
 
+use crate::bottom_bar::BottomBar;
 use crate::panels::{self, ContentPanel, Kind, LastFocusedTabPanel};
 use crate::persistence;
 use crate::top_bar::{
@@ -27,6 +28,7 @@ const DOCK_AREA_ID: &str = "main-dock";
 
 pub struct TerminalWorkspace {
     top_bar: Entity<TopBar>,
+    bottom_bar: Entity<BottomBar>,
     dock_area: Entity<DockArea>,
     last_saved: Option<DockAreaState>,
     _save_task: Option<Task<()>>,
@@ -72,9 +74,11 @@ impl TerminalWorkspace {
         .detach();
 
         let top_bar = cx.new(|cx| TopBar::new("terminal_demo", window, cx));
+        let bottom_bar = cx.new(|cx| BottomBar::new(window, cx));
 
         let mut this = Self {
             top_bar,
+            bottom_bar,
             dock_area,
             last_saved: None,
             _save_task: None,
@@ -761,6 +765,7 @@ impl Render for TerminalWorkspace {
                     .min_h_0()
                     .child(self.dock_area.clone()),
             )
+            .child(self.bottom_bar.clone())
             .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)

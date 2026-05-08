@@ -4,6 +4,7 @@ use gpui_component::{Root, Theme, ThemeMode};
 const FONT_SIZE_MIN: f32 = 10.0;
 const FONT_SIZE_MAX: f32 = 28.0;
 
+pub mod bottom_bar;
 pub mod economic_calendar;
 pub mod panels;
 pub mod persistence;

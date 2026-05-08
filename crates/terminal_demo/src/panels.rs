@@ -23,6 +23,7 @@ use gpui_component::{
     menu::DropdownMenu as _,
     notification::Notification,
     plot::AXIS_GAP,
+    text::{html, markdown},
     v_flex,
 };
 use serde::Deserialize;
@@ -40,6 +41,11 @@ pub enum Kind {
     EconomicCalendar,
     Position,
     Execution,
+    Markdown,
+    Html,
+    Trump,
+    Screener,
+    Geopolitics,
 }
 
 impl Kind {
@@ -55,6 +61,11 @@ impl Kind {
         Kind::EconomicCalendar,
         Kind::Position,
         Kind::Execution,
+        Kind::Markdown,
+        Kind::Html,
+        Kind::Trump,
+        Kind::Screener,
+        Kind::Geopolitics,
     ];
 
     pub fn id(self) -> &'static str {
@@ -70,6 +81,11 @@ impl Kind {
             Kind::EconomicCalendar => "EconomicCalendar",
             Kind::Position => "Position",
             Kind::Execution => "Execution",
+            Kind::Markdown => "Markdown",
+            Kind::Html => "Html",
+            Kind::Trump => "Trump",
+            Kind::Screener => "Screener",
+            Kind::Geopolitics => "Geopolitics",
         }
     }
 
@@ -79,6 +95,9 @@ impl Kind {
             Kind::SmartMoney => "Smart Money",
             Kind::AiChat => "AI Chat",
             Kind::EconomicCalendar => "Economic Calendar",
+            Kind::Markdown => "Markdown Test",
+            Kind::Html => "HTML Test",
+            Kind::Trump => "Trump Tracker",
             other => other.id(),
         }
     }
@@ -323,6 +342,11 @@ impl Render for ContentPanel {
                 cx,
             )
             .into_any_element(),
+            Kind::Markdown => render_markdown_test(window, cx).into_any_element(),
+            Kind::Html => render_html_test(window, cx).into_any_element(),
+            Kind::Trump => render_trump(window, cx).into_any_element(),
+            Kind::Screener => render_screener(window, cx).into_any_element(),
+            Kind::Geopolitics => render_geopolitics(window, cx).into_any_element(),
             Kind::EconomicCalendar => unreachable!(
                 "EconomicCalendar is handled by EconomicCalendarPanel, not ContentPanel"
             ),
@@ -999,6 +1023,844 @@ fn render_chart(
                 ),
         )
         .child(canvas)
+}
+
+// ============================================================================
+// Markdown Test
+// ============================================================================
+
+const MARKDOWN_DUMMY: &str = r#"# Markdown Rendering Test
+
+A sandbox panel exercising **gpui-component**'s built-in `text::markdown()`
+helper. No browser involved — this is rendered natively by the same widget
+that powers the AI Chat reply view.
+
+---
+
+## Inline formatting
+
+Regular text mixed with **bold**, *italic*, ***bold-italic***, `inline code`,
+~~strikethrough~~, and a [link to example.com](https://example.com).
+
+> Block quotes wrap nicely and pick up the muted-foreground colour from the
+> active theme. They're useful for callouts and pull-quotes inside longer
+> explanations.
+
+## Lists
+
+Unordered:
+
+- First bullet
+- Second bullet with **emphasis**
+  - Nested item alpha
+  - Nested item beta
+- Third bullet with `code`
+
+Ordered:
+
+1. Set up the dock layout
+2. Add the panel to the registry
+3. Wire up the render dispatch
+4. Profit
+
+Task list:
+
+- [x] Render headings
+- [x] Render lists
+- [ ] Wire up table-of-contents
+- [ ] Persist scroll position
+
+## Code
+
+Inline `let x = 42;` and a fenced block:
+
+```rust
+fn fibonacci(n: u32) -> u64 {
+    let (mut a, mut b) = (0u64, 1u64);
+    for _ in 0..n {
+        let next = a + b;
+        a = b;
+        b = next;
+    }
+    a
+}
+```
+
+```python
+def greet(name: str) -> str:
+    return f"hello, {name}"
+```
+
+## Tables
+
+| Symbol | Last    | Δ%      | Sector       |
+|--------|--------:|--------:|--------------|
+| AAPL   | 185.32  | +1.23%  | Technology   |
+| MSFT   | 378.45  | -0.45%  | Technology   |
+| NVDA   | 875.21  | +3.87%  | Technology   |
+| TSLA   | 248.50  | -1.89%  | Auto         |
+| BRK.B  | 412.65  | -0.12%  | Financials   |
+
+## Headings cascade
+
+### Level 3
+#### Level 4
+##### Level 5
+###### Level 6
+
+That's the lot — scroll up to confirm spacing and rhythm look right.
+"#;
+
+fn render_markdown_test(
+    _window: &mut Window,
+    _cx: &mut Context<ContentPanel>,
+) -> impl IntoElement {
+    v_flex()
+        .w_full()
+        .p_4()
+        .gap_2()
+        .child(markdown(MARKDOWN_DUMMY))
+}
+
+// ============================================================================
+// HTML Test
+// ============================================================================
+
+const HTML_DUMMY: &str = r#"<h1>HTML Rendering Test</h1>
+<p>
+  A sandbox panel exercising <strong>gpui-component</strong>'s
+  <code>text::html()</code> helper. The library parses HTML with
+  <em>html5ever</em> and renders the supported subset directly into GPUI —
+  no browser engine, no iframe, no DOM.
+</p>
+
+<hr/>
+
+<h2>Inline formatting</h2>
+<p>
+  Regular text mixed with <b>bold</b>, <i>italic</i>, <u>underline</u>,
+  <code>inline code</code>, <s>strikethrough</s>, and a
+  <a href="https://example.com">link to example.com</a>.
+</p>
+
+<blockquote>
+  Block quotes wrap and inherit a muted foreground colour from the active
+  theme. The HTML parser also accepts nested formatting, so
+  <em>emphasis inside quotes</em> works.
+</blockquote>
+
+<h2>Lists</h2>
+<ul>
+  <li>Unordered alpha</li>
+  <li>Unordered beta with <strong>emphasis</strong></li>
+  <li>
+    Nested:
+    <ul>
+      <li>inner one</li>
+      <li>inner two</li>
+    </ul>
+  </li>
+</ul>
+
+<ol>
+  <li>Ordered first</li>
+  <li>Ordered second</li>
+  <li>Ordered third</li>
+</ol>
+
+<h2>Code</h2>
+<pre><code>fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+</code></pre>
+
+<h2>Table</h2>
+<table>
+  <thead>
+    <tr><th>Ticker</th><th>Last</th><th>Δ%</th><th>Sector</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>AAPL</td><td>185.32</td><td>+1.23%</td><td>Technology</td></tr>
+    <tr><td>MSFT</td><td>378.45</td><td>-0.45%</td><td>Technology</td></tr>
+    <tr><td>NVDA</td><td>875.21</td><td>+3.87%</td><td>Technology</td></tr>
+    <tr><td>TSLA</td><td>248.50</td><td>-1.89%</td><td>Auto</td></tr>
+    <tr><td>BRK.B</td><td>412.65</td><td>-0.12%</td><td>Financials</td></tr>
+  </tbody>
+</table>
+
+<h2>Headings cascade</h2>
+<h3>Level 3</h3>
+<h4>Level 4</h4>
+<h5>Level 5</h5>
+<h6>Level 6</h6>
+
+<p>That's the lot — anything broken above is a parser limitation, not a
+content issue.</p>
+"#;
+
+fn render_html_test(
+    _window: &mut Window,
+    _cx: &mut Context<ContentPanel>,
+) -> impl IntoElement {
+    v_flex()
+        .w_full()
+        .p_4()
+        .gap_2()
+        .child(html(HTML_DUMMY))
+}
+
+// ============================================================================
+// Trump Tracker
+// ============================================================================
+
+#[derive(Clone, Copy)]
+enum TrumpChannel {
+    TruthSocial,
+    Speech,
+    Press,
+    Rally,
+    Interview,
+}
+
+struct TrumpPost {
+    when: &'static str,
+    channel: TrumpChannel,
+    location: &'static str,
+    headline: &'static str,
+    excerpt: &'static str,
+    impact_tags: &'static [&'static str],
+    /// Rough market lean inferred from the post — bullish/bearish/neutral risk.
+    sentiment: Option<bool>,
+    engagement: &'static str,
+}
+
+const TRUMP_POSTS: &[TrumpPost] = &[
+    TrumpPost {
+        when: "10:42",
+        channel: TrumpChannel::TruthSocial,
+        location: "@realDonaldTrump",
+        headline: "“60% TARIFFS on Chinese EVs starting Day One. American jobs come first!”",
+        excerpt: "Truth Social post promising sweeping auto tariffs if re-elected, naming BYD, Geely, and NIO as targets. Calls Detroit “a disaster waiting to be saved.”",
+        impact_tags: &["TSLA", "F", "GM", "CHINA-A", "AUTO"],
+        sentiment: Some(false),
+        engagement: "82.4k reposts · 412k likes",
+    },
+    TrumpPost {
+        when: "09:18",
+        channel: TrumpChannel::Rally,
+        location: "Erie, PA",
+        headline: "Pledges to “end the EV mandate on day one” at Pennsylvania rally",
+        excerpt: "60-minute speech focusing on energy policy. Promises to reopen leased federal lands for drilling and to “drill, baby, drill — bigger than ever.”",
+        impact_tags: &["XOM", "CVX", "OIL", "TSLA", "RIVN"],
+        sentiment: Some(true),
+        engagement: "Live · 28k stream peak",
+    },
+    TrumpPost {
+        when: "08:55",
+        channel: TrumpChannel::TruthSocial,
+        location: "@realDonaldTrump",
+        headline: "“Powell is too late, AGAIN. Cut rates NOW or markets crash.”",
+        excerpt: "Direct attack on Fed Chair ahead of FOMC. Claims the central bank is “politically captured” and demands an emergency 50bp cut.",
+        impact_tags: &["FED", "DXY", "TLT", "SPX"],
+        sentiment: None,
+        engagement: "44.1k reposts · 198k likes",
+    },
+    TrumpPost {
+        when: "Yesterday 22:10",
+        channel: TrumpChannel::Interview,
+        location: "Fox Business",
+        headline: "Floats replacing income tax with universal tariff regime",
+        excerpt: "In a 20-min interview, suggests a 10% across-the-board tariff could “fund the entire government.” Economists immediately push back; futures wobble.",
+        impact_tags: &["WMT", "TGT", "AMZN", "USD"],
+        sentiment: Some(false),
+        engagement: "1.2M views · trending #1",
+    },
+    TrumpPost {
+        when: "Yesterday 18:45",
+        channel: TrumpChannel::TruthSocial,
+        location: "@realDonaldTrump",
+        headline: "“Bitcoin will be made in the USA. The CCP cannot have it.”",
+        excerpt: "Endorses domestic mining and proposes a strategic Bitcoin reserve modeled on the SPR. Crypto markets rip 4% on the post.",
+        impact_tags: &["BTC", "MARA", "RIOT", "COIN"],
+        sentiment: Some(true),
+        engagement: "118k reposts · 540k likes",
+    },
+    TrumpPost {
+        when: "Yesterday 15:02",
+        channel: TrumpChannel::Press,
+        location: "Mar-a-Lago presser",
+        headline: "Calls NATO members “delinquent” — threatens conditional defense",
+        excerpt: "Says U.S. would only defend allies that meet 2% spending. European defense names spike on expectation of forced rearmament.",
+        impact_tags: &["LMT", "RTX", "EU-DEF", "EUR"],
+        sentiment: Some(true),
+        engagement: "Pool feed · 47 outlets",
+    },
+    TrumpPost {
+        when: "2d ago",
+        channel: TrumpChannel::Speech,
+        location: "CPAC keynote",
+        headline: "“Day-one drilling permits — Alaska, Gulf, ANWR all reopen.”",
+        excerpt: "Outlines an executive-order package to fast-track LNG export approvals and unwind the current pause. Energy ETFs gap up at the open.",
+        impact_tags: &["XLE", "LNG", "OXY", "TPL"],
+        sentiment: Some(true),
+        engagement: "9k attendees · standing O",
+    },
+    TrumpPost {
+        when: "2d ago",
+        channel: TrumpChannel::TruthSocial,
+        location: "@realDonaldTrump",
+        headline: "“Pharma companies RIPPING OFF Americans. Prices coming down.”",
+        excerpt: "Threatens executive action on drug pricing if Congress fails to deliver. Pharma sector sells off pre-market on policy-risk premium.",
+        impact_tags: &["LLY", "PFE", "MRK", "XBI"],
+        sentiment: Some(false),
+        engagement: "31.7k reposts · 142k likes",
+    },
+];
+
+fn render_trump(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl IntoElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let border = theme.border;
+    let bullish = theme.chart_bullish;
+    let bearish = theme.chart_bearish;
+    let card_bg = theme.muted;
+
+    let header = h_flex()
+        .px_3()
+        .py_2()
+        .gap_2()
+        .items_center()
+        .border_b_1()
+        .border_color(border)
+        .child(div().size_2().rounded_full().bg(theme.chart_bearish))
+        .child(div().text_sm().font_semibold().child("Trump Tracker"))
+        .child(div().flex_1())
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child("Truth Social · speeches · pressers · interviews"),
+        );
+
+    let posts = v_flex()
+        .w_full()
+        .p_2()
+        .gap_2()
+        .children(TRUMP_POSTS.iter().enumerate().map(|(idx, p)| {
+            let (channel_label, channel_color) = match p.channel {
+                TrumpChannel::TruthSocial => ("TRUTH",  theme.chart_3),
+                TrumpChannel::Speech      => ("SPEECH", theme.chart_5),
+                TrumpChannel::Press       => ("PRESS",  theme.chart_4),
+                TrumpChannel::Rally       => ("RALLY",  theme.chart_2),
+                TrumpChannel::Interview   => ("INTV",   theme.chart_1),
+            };
+            let (sentiment_label, sentiment_color) = match p.sentiment {
+                Some(true) => ("RISK-ON", bullish),
+                Some(false) => ("RISK-OFF", bearish),
+                None => ("MIXED", muted),
+            };
+            v_flex()
+                .id(SharedString::from(format!("trump-row-{idx}")))
+                .px_3()
+                .py_2()
+                .gap_2()
+                .rounded(gpui::px(6.))
+                .bg(card_bg)
+                .border_1()
+                .border_color(border)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .text_xs()
+                        .child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(gpui::px(3.))
+                                .bg(channel_color)
+                                .text_color(theme.background)
+                                .font_semibold()
+                                .child(channel_label),
+                        )
+                        .child(div().text_color(muted).child(p.location))
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .font_semibold()
+                                .text_color(sentiment_color)
+                                .child(sentiment_label),
+                        )
+                        .child(div().text_color(muted).child(p.when)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .text_color(theme.foreground)
+                        .child(p.headline),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(p.excerpt),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .children(p.impact_tags.iter().map(|t| {
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(gpui::px(3.))
+                                .bg(theme.accent)
+                                .text_color(theme.accent_foreground)
+                                .text_xs()
+                                .child(*t)
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .items_center()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(div().flex_1().child(p.engagement)),
+                )
+        }));
+
+    v_flex().w_full().child(header).child(posts)
+}
+
+// ============================================================================
+// Screener
+// ============================================================================
+
+#[derive(Clone, Copy)]
+enum ScreenerSignal {
+    Breakout,
+    Oversold,
+    Squeeze,
+    Reversal,
+    Momentum,
+}
+
+struct ScreenerRow {
+    symbol: &'static str,
+    sector: &'static str,
+    last: f64,
+    change_pct: f64,
+    rel_vol: f64,
+    market_cap: &'static str,
+    rsi: f64,
+    signal: ScreenerSignal,
+}
+
+const SCREENER_ROWS: &[ScreenerRow] = &[
+    ScreenerRow { symbol: "NVDA", sector: "Semiconductors", last: 875.21, change_pct: 3.87,  rel_vol: 2.4, market_cap: "$2.16T",  rsi: 68.4, signal: ScreenerSignal::Breakout },
+    ScreenerRow { symbol: "META", sector: "Communications", last: 502.34, change_pct: 2.14,  rel_vol: 1.8, market_cap: "$1.28T",  rsi: 62.1, signal: ScreenerSignal::Momentum },
+    ScreenerRow { symbol: "AAPL", sector: "Technology",     last: 185.32, change_pct: 1.23,  rel_vol: 1.1, market_cap: "$2.85T",  rsi: 54.7, signal: ScreenerSignal::Squeeze },
+    ScreenerRow { symbol: "AMD",  sector: "Semiconductors", last: 162.85, change_pct: -2.41, rel_vol: 1.6, market_cap: "$263B",   rsi: 38.2, signal: ScreenerSignal::Oversold },
+    ScreenerRow { symbol: "MU",   sector: "Semiconductors", last: 119.40, change_pct: 4.62,  rel_vol: 3.1, market_cap: "$132B",   rsi: 71.5, signal: ScreenerSignal::Breakout },
+    ScreenerRow { symbol: "PLTR", sector: "Software",       last: 24.18,  change_pct: 5.94,  rel_vol: 2.9, market_cap: "$54B",    rsi: 74.8, signal: ScreenerSignal::Momentum },
+    ScreenerRow { symbol: "CRWD", sector: "Cybersecurity",  last: 318.40, change_pct: -1.85, rel_vol: 1.4, market_cap: "$77B",    rsi: 41.3, signal: ScreenerSignal::Reversal },
+    ScreenerRow { symbol: "SMCI", sector: "Hardware",       last: 712.00, change_pct: 7.18,  rel_vol: 4.2, market_cap: "$41B",    rsi: 78.9, signal: ScreenerSignal::Breakout },
+    ScreenerRow { symbol: "TSLA", sector: "Auto",           last: 248.50, change_pct: -1.89, rel_vol: 1.7, market_cap: "$789B",   rsi: 36.4, signal: ScreenerSignal::Oversold },
+    ScreenerRow { symbol: "ARM",  sector: "Semiconductors", last: 142.65, change_pct: 2.92,  rel_vol: 2.0, market_cap: "$148B",   rsi: 64.7, signal: ScreenerSignal::Squeeze },
+    ScreenerRow { symbol: "AVGO", sector: "Semiconductors", last: 1342.10, change_pct: 1.74, rel_vol: 1.3, market_cap: "$626B",   rsi: 58.9, signal: ScreenerSignal::Momentum },
+    ScreenerRow { symbol: "SHOP", sector: "Software",       last: 75.40,  change_pct: -3.18, rel_vol: 1.5, market_cap: "$96B",    rsi: 32.7, signal: ScreenerSignal::Reversal },
+];
+
+fn render_screener(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl IntoElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let bullish = theme.chart_bullish;
+    let bearish = theme.chart_bearish;
+    let border = theme.border;
+
+    let chip = |label: &'static str, active: bool| {
+        let (bg, fg) = if active {
+            (theme.primary, theme.primary_foreground)
+        } else {
+            (theme.muted, theme.muted_foreground)
+        };
+        div()
+            .px_2()
+            .py_0p5()
+            .rounded(gpui::px(999.))
+            .bg(bg)
+            .text_color(fg)
+            .text_xs()
+            .child(label)
+    };
+
+    let filter_bar = v_flex()
+        .px_3()
+        .py_2()
+        .gap_2()
+        .border_b_1()
+        .border_color(border)
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_sm().font_semibold().child("Stock Screener"))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("{} matches", SCREENER_ROWS.len())),
+                ),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .child(div().text_xs().text_color(muted).child("Universe:"))
+                .child(chip("S&P 500", true))
+                .child(chip("NASDAQ 100", false))
+                .child(chip("Russell 2000", false))
+                .child(div().w_2())
+                .child(div().text_xs().text_color(muted).child("Cap:"))
+                .child(chip("Mega", true))
+                .child(chip("Large", true))
+                .child(chip("Mid", false)),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .child(div().text_xs().text_color(muted).child("Signal:"))
+                .child(chip("Breakout", true))
+                .child(chip("Momentum", true))
+                .child(chip("Oversold", true))
+                .child(chip("Squeeze", true))
+                .child(chip("Reversal", false))
+                .child(div().w_2())
+                .child(div().text_xs().text_color(muted).child("RVol > 1.0"))
+                .child(div().text_xs().text_color(muted).child("· Price > $20")),
+        );
+
+    let header_row = h_flex()
+        .px_3()
+        .py_1p5()
+        .gap_2()
+        .text_xs()
+        .text_color(muted)
+        .border_b_1()
+        .border_color(border)
+        .child(div().w(gpui::px(64.)).child("Symbol"))
+        .child(div().flex_1().child("Sector"))
+        .child(div().w(gpui::px(72.)).text_right().child("Last"))
+        .child(div().w(gpui::px(64.)).text_right().child("Chg %"))
+        .child(div().w(gpui::px(56.)).text_right().child("RVol"))
+        .child(div().w(gpui::px(56.)).text_right().child("RSI"))
+        .child(div().w(gpui::px(72.)).text_right().child("Cap"))
+        .child(div().w(gpui::px(80.)).text_right().child("Signal"));
+
+    let rows = v_flex().children(SCREENER_ROWS.iter().map(|r| {
+        let chg_color = if r.change_pct >= 0.0 { bullish } else { bearish };
+        let (signal_label, signal_color) = match r.signal {
+            ScreenerSignal::Breakout => ("BREAKOUT", bullish),
+            ScreenerSignal::Oversold => ("OVERSOLD", theme.chart_4),
+            ScreenerSignal::Squeeze  => ("SQUEEZE",  theme.chart_5),
+            ScreenerSignal::Reversal => ("REVERSAL", theme.chart_3),
+            ScreenerSignal::Momentum => ("MOMENTUM", theme.chart_2),
+        };
+        let rsi_color = if r.rsi >= 70.0 {
+            bullish
+        } else if r.rsi <= 30.0 {
+            bearish
+        } else {
+            theme.foreground
+        };
+        h_flex()
+            .px_3()
+            .py_1p5()
+            .gap_2()
+            .text_sm()
+            .border_b_1()
+            .border_color(border)
+            .child(div().w(gpui::px(64.)).font_semibold().child(r.symbol))
+            .child(div().flex_1().text_color(muted).child(r.sector))
+            .child(
+                div()
+                    .w(gpui::px(72.))
+                    .text_right()
+                    .child(format!("{:.2}", r.last)),
+            )
+            .child(
+                div()
+                    .w(gpui::px(64.))
+                    .text_right()
+                    .text_color(chg_color)
+                    .child(format!("{:+.2}%", r.change_pct)),
+            )
+            .child(
+                div()
+                    .w(gpui::px(56.))
+                    .text_right()
+                    .child(format!("{:.1}x", r.rel_vol)),
+            )
+            .child(
+                div()
+                    .w(gpui::px(56.))
+                    .text_right()
+                    .text_color(rsi_color)
+                    .child(format!("{:.0}", r.rsi)),
+            )
+            .child(
+                div()
+                    .w(gpui::px(72.))
+                    .text_right()
+                    .text_color(muted)
+                    .child(r.market_cap),
+            )
+            .child(
+                div()
+                    .w(gpui::px(80.))
+                    .text_right()
+                    .child(
+                        div()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(gpui::px(3.))
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(signal_color)
+                            .border_1()
+                            .border_color(signal_color)
+                            .child(signal_label),
+                    ),
+            )
+    }));
+
+    v_flex().w_full().child(filter_bar).child(header_row).child(rows)
+}
+
+// ============================================================================
+// Geopolitics
+// ============================================================================
+
+#[derive(Clone, Copy)]
+enum GeoSeverity { Critical, High, Medium, Low }
+
+#[derive(Clone, Copy)]
+enum GeoRegion {
+    MiddleEast,
+    Europe,
+    AsiaPacific,
+    Americas,
+    Africa,
+}
+
+struct GeoEvent {
+    when: &'static str,
+    region: GeoRegion,
+    severity: GeoSeverity,
+    headline: &'static str,
+    summary: &'static str,
+    asset_impact: &'static [(&'static str, f64)],
+}
+
+const GEO_EVENTS: &[GeoEvent] = &[
+    GeoEvent {
+        when: "12m ago",
+        region: GeoRegion::MiddleEast,
+        severity: GeoSeverity::Critical,
+        headline: "Strikes near Iranian oil terminal at Kharg Island",
+        summary: "Reuters reports two explosions near loading jetties. Tankers reroute. Brent +3.4% intraday; Saudi defense cabinet convenes.",
+        asset_impact: &[("BRENT", 3.42), ("XLE", 1.85), ("SPX", -0.62), ("USDJPY", -0.41)],
+    },
+    GeoEvent {
+        when: "47m ago",
+        region: GeoRegion::Europe,
+        severity: GeoSeverity::High,
+        headline: "EU agrees on 14th sanctions package against Russia",
+        summary: "Council greenlights LNG transshipment ban via EU ports plus secondary sanctions on third-country re-exporters. Brussels signals more measures by Q3.",
+        asset_impact: &[("EUR", -0.18), ("TTF-GAS", 2.10), ("STOXX600", -0.34)],
+    },
+    GeoEvent {
+        when: "1h ago",
+        region: GeoRegion::AsiaPacific,
+        severity: GeoSeverity::High,
+        headline: "Taiwan reports record PLA Navy incursion across median line",
+        summary: "Taiwan MND says 28 PLAN vessels and 47 aircraft crossed the strait’s median line overnight. Pentagon comments expected pre-market.",
+        asset_impact: &[("TSM", -2.12), ("SOXX", -1.04), ("USDTWD", 0.38), ("XAU", 0.62)],
+    },
+    GeoEvent {
+        when: "2h ago",
+        region: GeoRegion::Americas,
+        severity: GeoSeverity::Medium,
+        headline: "Mexico court ruling threatens to delay USMCA review",
+        summary: "Constitutional ruling on energy nationalization complicates U.S.–Mexico negotiations ahead of 2026 USMCA review. Auto and energy supply-chain risk repriced.",
+        asset_impact: &[("MXN", -0.58), ("EWW", -0.94), ("F", -0.41)],
+    },
+    GeoEvent {
+        when: "3h ago",
+        region: GeoRegion::Europe,
+        severity: GeoSeverity::Medium,
+        headline: "France downgraded to AA- by S&P; spreads widen vs Bunds",
+        summary: "Cited fiscal slippage and political fragmentation. OAT-Bund 10y spread blows out to 78bp, the widest since 2012.",
+        asset_impact: &[("CAC40", -0.88), ("OAT-BUND", 7.80), ("EUR", -0.27)],
+    },
+    GeoEvent {
+        when: "5h ago",
+        region: GeoRegion::AsiaPacific,
+        severity: GeoSeverity::Low,
+        headline: "BoJ governor Ueda signals patience on next hike",
+        summary: "Speech at IMF: data-dependent, but “normalization remains the direction.” Yen weakens through 158 against the dollar.",
+        asset_impact: &[("USDJPY", 0.74), ("NKY", 1.12), ("JGB10Y", 1.20)],
+    },
+    GeoEvent {
+        when: "Yesterday",
+        region: GeoRegion::Africa,
+        severity: GeoSeverity::Medium,
+        headline: "Niger junta orders French uranium operator to suspend ops",
+        summary: "Orano-operated Arlit mine paused. Uranium spot up 4%. EDF reviews fuel-supply contingencies.",
+        asset_impact: &[("URA", 4.02), ("CCJ", 3.18), ("XAU", 0.41)],
+    },
+    GeoEvent {
+        when: "Yesterday",
+        region: GeoRegion::MiddleEast,
+        severity: GeoSeverity::High,
+        headline: "Houthi attacks resume in Red Sea after 2-week lull",
+        summary: "Two more bulkers struck near Bab el-Mandeb. CMA CGM and Maersk extend Cape of Good Hope reroutes through end of quarter.",
+        asset_impact: &[("FBX-CN-EU", 8.40), ("ZIM", 5.12), ("BRENT", 1.20)],
+    },
+];
+
+fn render_geopolitics(_window: &mut Window, cx: &mut Context<ContentPanel>) -> impl IntoElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let bullish = theme.chart_bullish;
+    let bearish = theme.chart_bearish;
+    let border = theme.border;
+
+    let region_label_color = |r: GeoRegion| -> (&'static str, gpui::Hsla) {
+        match r {
+            GeoRegion::MiddleEast  => ("MIDDLE EAST",  theme.chart_3),
+            GeoRegion::Europe      => ("EUROPE",       theme.chart_2),
+            GeoRegion::AsiaPacific => ("ASIA-PACIFIC", theme.chart_5),
+            GeoRegion::Americas    => ("AMERICAS",     theme.chart_1),
+            GeoRegion::Africa      => ("AFRICA",       theme.chart_4),
+        }
+    };
+
+    let severity_label_color = |s: GeoSeverity| -> (&'static str, gpui::Hsla) {
+        match s {
+            GeoSeverity::Critical => ("CRITICAL", theme.chart_bearish),
+            GeoSeverity::High     => ("HIGH",     theme.chart_4),
+            GeoSeverity::Medium   => ("MEDIUM",   theme.chart_5),
+            GeoSeverity::Low      => ("LOW",      theme.chart_bullish),
+        }
+    };
+
+    let header = h_flex()
+        .px_3()
+        .py_2()
+        .items_center()
+        .gap_2()
+        .border_b_1()
+        .border_color(border)
+        .child(div().size_2().rounded_full().bg(theme.chart_4))
+        .child(div().text_sm().font_semibold().child("Geopolitical Watch"))
+        .child(div().flex_1())
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child("Live · macro & cross-asset impact"),
+        );
+
+    let events = v_flex()
+        .w_full()
+        .p_2()
+        .gap_2()
+        .children(GEO_EVENTS.iter().enumerate().map(|(idx, e)| {
+            let (region_label, region_color) = region_label_color(e.region);
+            let (sev_label, sev_color) = severity_label_color(e.severity);
+            v_flex()
+                .id(SharedString::from(format!("geo-row-{idx}")))
+                .px_3()
+                .py_2()
+                .gap_2()
+                .rounded(gpui::px(6.))
+                .border_1()
+                .border_color(border)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .text_xs()
+                        .child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(gpui::px(3.))
+                                .bg(sev_color)
+                                .text_color(theme.background)
+                                .font_semibold()
+                                .child(sev_label),
+                        )
+                        .child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(gpui::px(3.))
+                                .border_1()
+                                .border_color(region_color)
+                                .text_color(region_color)
+                                .font_semibold()
+                                .child(region_label),
+                        )
+                        .child(div().flex_1())
+                        .child(div().text_color(muted).child(e.when)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .text_color(theme.foreground)
+                        .child(e.headline),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(e.summary),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .children(e.asset_impact.iter().map(|(asset, pct)| {
+                            let color = if *pct >= 0.0 { bullish } else { bearish };
+                            h_flex()
+                                .px_1p5()
+                                .py_0p5()
+                                .gap_1()
+                                .rounded(gpui::px(3.))
+                                .bg(theme.muted)
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .text_color(theme.foreground)
+                                        .font_semibold()
+                                        .child(*asset),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(color)
+                                        .child(format!("{:+.2}%", pct)),
+                                )
+                        })),
+                )
+        }));
+
+    v_flex().w_full().child(header).child(events)
 }
 
 // ============================================================================
